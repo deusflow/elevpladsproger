@@ -48,29 +48,21 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
     
     async def handle_response(response):
         nonlocal intercepted_data
-        if "api/soeg-opslag" in response.url and response.request.method == "POST":
+        if "api/soeg-opslag" in response.url and not "kort" in response.url:
             try:
                 text = await response.text()
                 intercepted_data = json.loads(text)
+                logger.info("Lærepladsen API Intercepted!")
             except Exception as e:
                 logger.error(f"Error reading Lærepladsen response: {e}")
 
     try:
         logger.info("Starting Lærepladsen scrape via Playwright interception...")
         page.on("response", handle_response)
-        await page.goto("https://sr.laerepladsen.dk/soeg-opslag", wait_until="networkidle", timeout=30000)
         
-        # Trigger the POST query by searching for "Datatekniker" in the input field
-        input_el = page.locator("input:visible").first
-        try:
-            await input_el.wait_for(state="visible", timeout=10000)
-            await input_el.click()
-            await input_el.fill("Datatekniker med speciale i programmering")
-            await page.wait_for_timeout(1000)
-            await page.keyboard.press("ArrowDown")
-            await page.keyboard.press("Enter")
-        except Exception as e:
-            logger.warning(f"Could not find input element on Lærepladsen: {e}")
+        # Load the direct search page which automatically triggers the API GET request
+        url = "https://sr.laerepladsen.dk/soeg-opslag/0/Data-%20og%20kommunikationsuddannelsen/3607/Datatekniker/8871/midtjylland"
+        await page.goto(url, wait_until="networkidle", timeout=30000)
             
         # Wait up to 8 seconds for interception to complete
         for _ in range(16):
@@ -78,20 +70,23 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
                 break
             await asyncio.sleep(0.5)
             
-        if intercepted_data and "opslag" in intercepted_data:
-            for item in intercepted_data["opslag"]:
-                title = item.get("virksomhedskarakteristikaBeskrivelse", "") or item.get("overskrift", "") or "Datatekniker Elev"
-                company = item.get("virksomhedNavn", "Ukendt")
-                postal = str(item.get("postnr", ""))
+        if intercepted_data and "laeresteder" in intercepted_data:
+            for company_item in intercepted_data["laeresteder"]:
+                company_name = company_item.get("navn", "Ukendt")
+                postal = str(company_item.get("postnummer", ""))
                 
-                if is_valid_job(title, postal, company):
-                    jobs.append(format_job(
-                        job_id=item.get("id"),
-                        title=title,
-                        company=company,
-                        url=f"https://laerepladsen.dk/elev/opslag/{item.get('id')}",
-                        source="Laerepladsen"
-                    ))
+                postings = company_item.get("opslag", [])
+                for item in postings:
+                    title = item.get("titel", "") or item.get("beskrivelse", "") or "Datatekniker Elev"
+                    
+                    if is_valid_job(title, postal, company_name):
+                        jobs.append(format_job(
+                            job_id=item.get("id"),
+                            title=title,
+                            company=company_name,
+                            url=f"https://laerepladsen.dk/elev/opslag/{item.get('id')}",
+                            source="Laerepladsen"
+                        ))
     except Exception as e:
         logger.error(f"Error in Lærepladsen scraper: {e}")
     finally:
