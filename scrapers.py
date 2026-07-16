@@ -144,6 +144,110 @@ async def scrape_jobnet(page: Page) -> list[dict]:
         logger.error(f"Error in Jobnet scraper: {e}")
     return jobs
 
+async def scrape_itjobbank(page: Page) -> list[dict]:
+    """Scrapes it-jobbank.dk for elevpladser."""
+    jobs = []
+    try:
+        logger.info("Starting IT-Jobbank scrape...")
+        url = "https://www.it-jobbank.dk/job/midtjylland?q=datatekniker"
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+        try:
+            await page.wait_for_selector(".job-search-result, .job-item, .result-item", timeout=5000)
+        except Exception:
+            logger.info("No job results found on IT-Jobbank.")
+            return jobs
+
+        listings = await page.locator(".job-item, .result-item").all()
+        logger.info(f"IT-Jobbank found {len(listings)} raw listings")
+        for listing in listings:
+            title_el = listing.locator("h3 a, h2 a, .job-title a").first
+            if not await title_el.count():
+                continue
+            title = (await title_el.inner_text()).strip()
+            href = await title_el.get_attribute("href") or ""
+            job_url = href if href.startswith("http") else f"https://www.it-jobbank.dk{href}"
+            
+            if "?" in job_url and not "job=" in job_url:
+                job_url = job_url.split("?")[0]
+
+            company_el = listing.locator(".company-name, .employer, .job-company").first
+            company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
+
+            location_el = listing.locator(".job-location, .location").first
+            location_text = (await location_el.inner_text()).strip() if await location_el.count() else ""
+            
+            postal_match = re.search(r'\b(\d{4})\b', location_text)
+            postal = postal_match.group(1) if postal_match else ""
+
+            if is_valid_job(title, postal, company):
+                job_id = job_url.rstrip("/").split("/")[-1] or title
+                jobs.append(format_job(
+                    job_id=job_id,
+                    title=title,
+                    company=company,
+                    url=job_url,
+                    source="ITJobbank"
+                ))
+    except Exception as e:
+        logger.error(f"Error in IT-Jobbank scraper: {e}")
+    return jobs
+
+async def scrape_thehub() -> list[dict]:
+    """Uses TheHub.io API directly via httpx."""
+    jobs = []
+    try:
+        logger.info("Starting TheHub.io scrape via API...")
+        api_url = "https://thehub.io/api/jobs"
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json"
+        }
+        
+        # Search for both 'elev' and 'datatekniker'
+        for term in ["elev", "datatekniker"]:
+            params = {"countryCode": "DK", "search": term}
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                resp = await client.get(api_url, params=params, headers=headers)
+                if resp.status_code != 200:
+                    continue
+                    
+                data = resp.json()
+                docs = data.get("docs", [])
+                
+                for item in docs:
+                    title = item.get("title", "")
+                    company_data = item.get("company", {})
+                    company = company_data.get("name", "Ukendt")
+                    
+                    postal = ""
+                    locations = item.get("location", [])
+                    for loc in locations:
+                        if loc.get("country") == "Denmark" and loc.get("postalCode"):
+                            postal = str(loc.get("postalCode"))
+                            break
+                            
+                    job_id = str(item.get("key", ""))
+                    slug = item.get("slug", "")
+                    company_slug = company_data.get("slug", "")
+                    
+                    if slug and company_slug:
+                        url = f"https://thehub.io/jobs/{company_slug}/{slug}"
+                    else:
+                        url = f"https://thehub.io/jobs?jobId={job_id}"
+                    
+                    if is_valid_job(title, postal, company):
+                        jobs.append(format_job(
+                            job_id=job_id,
+                            title=title,
+                            company=company,
+                            url=url,
+                            source="TheHub"
+                        ))
+    except Exception as e:
+        logger.error(f"Error in TheHub scraper: {e}")
+    return jobs
+
 async def scrape_jobindex(page: Page) -> list[dict]:
     jobs = []
     try:

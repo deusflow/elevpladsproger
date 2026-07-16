@@ -2,11 +2,13 @@ import asyncio
 import json
 import os
 import httpx
+from datetime import datetime
 from patchright.async_api import async_playwright
 
-import config
-from config import logger
 import scrapers
+import company_scrapers
+from config import DB_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, PROXY_URL, logger
+import config
 
 def load_db() -> set:
     if os.path.exists(config.DB_FILE):
@@ -17,6 +19,16 @@ def load_db() -> set:
         except Exception as e:
             logger.error(f"Error loading DB: {e}")
     return set()
+
+def load_jobs() -> dict:
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {item["job_id"]: item for item in data}
+        except Exception as e:
+            logger.error(f"Error loading DB: {e}")
+    return {}
 
 def save_db(new_jobs: list[dict]):
     existing_data = []
@@ -47,13 +59,13 @@ async def notify_telegram(jobs: list[dict]):
         message = "*Nye IT Elevpladser (Midtjylland)*\n\n"
         for job in jobs:
             title = escape_markdown_v2(job['title'])
-        company = escape_markdown_v2(job['company'])
-        source = escape_markdown_v2(job['source'])
-        url = escape_markdown_v2(job['url'])
-        
-        message += f"🔹 *{title}*\n"
-        message += f"🏢 {company} ({source})\n"
-        message += f"🔗 [Ansøg her]({url})\n\n"
+            company = escape_markdown_v2(job['company'])
+            source = escape_markdown_v2(job['source'])
+            url = escape_markdown_v2(job['url'])
+            
+            message += f"🔹 *{title}*\n"
+            message += f"🏢 {company} ({source})\n"
+            message += f"🔗 [Ansøg her]({url})\n\n"
 
     payload = {
         "chat_id": config.TELEGRAM_CHAT_ID,
@@ -74,47 +86,62 @@ async def notify_telegram(jobs: list[dict]):
             logger.error(f"Error sending to telegram: {e}")
 
 async def main():
-    existing_ids = load_db()
+    logger.info("Starting scrape run...")
+    
+    # Load and clean old jobs (Retention logic: older than 30 days)
+    old_jobs = load_jobs()
+    now = datetime.now()
+    retained_jobs = {}
+    for jid, jdata in old_jobs.items():
+        try:
+            discovered = datetime.fromisoformat(jdata.get("discovered_at", now.isoformat()))
+            if (now - discovered).days < 30:
+                retained_jobs[jid] = jdata
+        except ValueError:
+            retained_jobs[jid] = jdata
+            
+    if len(retained_jobs) < len(old_jobs):
+        logger.info(f"Cleaned up {len(old_jobs) - len(retained_jobs)} old jobs from DB.")
+    old_jobs = retained_jobs
+    
     all_jobs = []
 
-    # Initialize Playwright once for all scrapers
-    logger.info("Launching Playwright...")
+    # HTTPX Scrapers (No browser)
+    all_jobs.extend(await scrapers.scrape_laerepladsen())
+    all_jobs.extend(await scrapers.scrape_elevplads())
+    all_jobs.extend(await scrapers.scrape_thehub())
+
+    # Playwright Scrapers
     async with async_playwright() as p:
-        browser_args = {}
-        if config.PROXY_URL:
-            browser_args["proxy"] = {"server": config.PROXY_URL}
+        browser_args = {
+            "headless": True
+        }
+        if PROXY_URL:
+            browser_args["proxy"] = {"server": PROXY_URL}
+            logger.info("Using configured PROXY_URL for Playwright.")
             
-        browser = await p.chromium.launch(headless=True, **browser_args)
+        browser = await p.chromium.launch(**browser_args)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
         
-        # 1. Run Lærepladsen
-        lp_jobs = await scrapers.scrape_laerepladsen(page)
-        all_jobs.extend(lp_jobs)
-        await asyncio.sleep(2.0)
+        # Run standard scrapers
+        all_jobs.extend(await scrapers.scrape_jobnet(page))
+        all_jobs.extend(await scrapers.scrape_jobindex(page))
+        all_jobs.extend(await scrapers.scrape_itjobbank(page))
         
-        # 2. Run Jobnet
-        jobnet_jobs = await scrapers.scrape_jobnet(page)
-        all_jobs.extend(jobnet_jobs)
-        await asyncio.sleep(2.0)
-        
-        # 3. Run Jobindex
-        jobindex_jobs = await scrapers.scrape_jobindex(page)
-        all_jobs.extend(jobindex_jobs)
-        await asyncio.sleep(2.0)
-        
-        # 4. Run Elevplads.dk
-        elevplads_jobs = await scrapers.scrape_elevplads(page)
-        all_jobs.extend(elevplads_jobs)
-        
+        # Custom Corporate Scrapers
+        all_jobs.extend(await company_scrapers.scrape_custom_companies(page))
+
         await browser.close()
 
     # Deduplicate
+    existing_ids = set(old_jobs.keys())
     new_jobs = []
     for job in all_jobs:
         if job["job_id"] not in existing_ids:
+            job["discovered_at"] = datetime.now().isoformat()
             new_jobs.append(job)
             existing_ids.add(job["job_id"])
 

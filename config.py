@@ -40,7 +40,8 @@ EXCLUDE_KEYWORDS = [
     "systemadministrator",
     "support",
     "helpdesk",
-    "netværk"
+    "netværk",
+    "grundfos"
 ]
 
 TARGET_ENTERPRISES = ["arla", "eurowind", "thise mejeri"]
