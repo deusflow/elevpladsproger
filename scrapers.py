@@ -218,18 +218,21 @@ async def scrape_thehub() -> list[dict]:
                 for item in docs:
                     title = item.get("title", "")
                     company_data = item.get("company", {})
-                    company = company_data.get("name", "Ukendt")
+                    company = company_data.get("name", "Ukendt") if isinstance(company_data, dict) else "Ukendt"
                     
                     postal = ""
-                    locations = item.get("location", [])
-                    for loc in locations:
-                        if loc.get("country") == "Denmark" and loc.get("postalCode"):
-                            postal = str(loc.get("postalCode"))
-                            break
+                    locations = item.get("location")
+                    if isinstance(locations, dict):
+                        locations = [locations]
+                    if isinstance(locations, list):
+                        for loc in locations:
+                            if isinstance(loc, dict) and loc.get("country") == "Denmark":
+                                postal = str(loc.get("postalCode", ""))
+                                break
                             
                     job_id = str(item.get("key", ""))
                     slug = item.get("slug", "")
-                    company_slug = company_data.get("slug", "")
+                    company_slug = company_data.get("slug", "") if isinstance(company_data, dict) else ""
                     
                     if slug and company_slug:
                         url = f"https://thehub.io/jobs/{company_slug}/{slug}"
