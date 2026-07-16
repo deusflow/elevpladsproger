@@ -2,8 +2,7 @@ import asyncio
 import json
 import os
 import httpx
-from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from patchright.async_api import async_playwright
 
 import config
 from config import logger
@@ -90,7 +89,6 @@ async def main():
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
-        await stealth_async(page)
         
         # 1. Run Lærepladsen
         lp_jobs = await scrapers.scrape_laerepladsen(page)
@@ -107,9 +105,9 @@ async def main():
         all_jobs.extend(jobindex_jobs)
         await asyncio.sleep(2.0)
         
-        # 4. Run Jobopslag.dk
-        jobopslag_jobs = await scrapers.scrape_jobopslag(page)
-        all_jobs.extend(jobopslag_jobs)
+        # 4. Run Elevplads.dk
+        elevplads_jobs = await scrapers.scrape_elevplads(page)
+        all_jobs.extend(elevplads_jobs)
         
         await browser.close()
 

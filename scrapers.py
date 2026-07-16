@@ -2,7 +2,7 @@ import re
 import json
 import asyncio
 from datetime import datetime, timezone
-from playwright.async_api import Page
+from patchright.async_api import Page
 import httpx
 import config
 from config import logger
@@ -96,46 +96,48 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
     return jobs
 
 async def scrape_jobnet(page: Page) -> list[dict]:
-    """Uses Jobnet's public REST API directly — no browser interaction needed."""
+    """Uses page.evaluate() within the Playwright browser to query Jobnet's BFF search API."""
     jobs = []
     try:
-        logger.info("Starting Jobnet scrape via direct API...")
-        # Jobnet public search API — no auth required
-        api_url = "https://job.jobnet.dk/CV/FindWork/SearchWorks"
-        params = {
-            "SearchString": "datatekniker",
-            "RegionIds": "7",  # Region Midtjylland
-            "WorkHours": "",
-            "IncludeLogo": "false",
-            "From": "0",
-            "Size": "100",
+        logger.info("Starting Jobnet scrape via browser BFF evaluation...")
+        await page.goto("https://jobnet.dk/find-job", wait_until="networkidle", timeout=30000)
+        
+        # Call the BFF Search endpoint inside the authenticated browser context
+        js_code = """
+        async () => {
+            const url = 'https://jobnet.dk/bff/FindJob/Search?resultsPerPage=100&pageNumber=1&orderType=BestMatch&searchString=datatekniker';
+            const response = await fetch(url, {
+                headers: {
+                    'x-csrf': '1',
+                    'accept': 'application/json'
+                }
+            });
+            if (!response.ok) {
+                throw new Error('HTTP error ' + response.status);
+            }
+            return await response.json();
         }
-        headers = {
-            "Accept": "application/json",
-            "Referer": "https://job.jobnet.dk/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-            resp = await client.get(api_url, params=params, headers=headers)
-            if resp.status_code != 200:
-                logger.warning(f"Jobnet API returned {resp.status_code}")
-                return jobs
-            data = resp.json()
-
-        postings = data.get("JobPositionPostings", [])
-        logger.info(f"Jobnet API returned {len(postings)} postings")
+        """
+        data = await page.evaluate(js_code)
+        postings = data.get("jobAds", [])
+        logger.info(f"Jobnet BFF API returned {len(postings)} postings")
+        
         for item in postings:
-            title = item.get("Title", "")
-            company = item.get("CompanyName", "Ukendt")
-            postal = str(item.get("ZipCode", ""))
-            job_id = str(item.get("ID", ""))
+            title = item.get("title", "") or item.get("occupation", "")
+            company = item.get("hiringOrgName", "Ukendt")
+            postal = str(item.get("postalCode", ""))
+            job_id = str(item.get("jobAdId", ""))
+            
+            # Use external URL if available, otherwise construct standard Jobnet details URL
+            external_url = item.get("jobAdUrl", "")
+            url = external_url if (external_url and external_url.startswith("http")) else f"https://jobnet.dk/find-job/details/{job_id}"
 
             if is_valid_job(title, postal, company):
                 jobs.append(format_job(
                     job_id=job_id,
                     title=title,
                     company=company,
-                    url=f"https://job.jobnet.dk/CV/FindWork/Details/{job_id}",
+                    url=url,
                     source="Jobnet"
                 ))
     except Exception as e:
@@ -191,44 +193,71 @@ async def scrape_jobindex(page: Page) -> list[dict]:
         logger.error(f"Error in Jobindex scraper: {e}")
     return jobs
 
-async def scrape_jobopslag(page: Page) -> list[dict]:
-    """Scrapes Jobopslag.dk — Danish job aggregator, no login required."""
+async def scrape_elevplads(page: Page) -> list[dict]:
+    """Uses elevplads.dk's public API to search for IT elevpladser — no browser needed."""
     jobs = []
-    try:
-        logger.info("Starting Jobopslag.dk scrape...")
-        url = "https://www.jobopslag.dk/soeg/?q=datatekniker+elev&region=midtjylland"
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-
-        try:
-            await page.wait_for_selector("article.job-card, .job-listing, .search-result-item", timeout=10000)
-        except Exception:
-            logger.warning("No job results found on Jobopslag.dk — selector mismatch or no results.")
-            return jobs
-
-        listings = await page.locator("article.job-card, .job-listing, .search-result-item").all()
-        logger.info(f"Jobopslag.dk found {len(listings)} raw listings")
-        for listing in listings:
-            title_el = listing.locator("h2 a, h3 a, .job-title a").first
-            if not await title_el.count():
-                continue
-            title = (await title_el.inner_text()).strip()
-            href = await title_el.get_attribute("href") or ""
-            job_url = href if href.startswith("http") else f"https://www.jobopslag.dk{href}"
-            if "?" in job_url:
-                job_url = job_url.split("?")[0]
-
-            company_el = listing.locator(".company-name, .employer, .job-company").first
-            company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
-
-            if is_valid_job(title, "", company):
-                job_id = job_url.rstrip("/").split("/")[-1] or title
-                jobs.append(format_job(
-                    job_id=job_id,
-                    title=title,
-                    company=company,
-                    url=job_url,
-                    source="Jobopslag"
-                ))
-    except Exception as e:
-        logger.error(f"Error in Jobopslag scraper: {e}")
+    queries = ["datatekniker", "it-elev", "softwareudvikler", "udvikler-elev", "programmering"]
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        for q in queries:
+            try:
+                logger.info(f"Starting elevplads.dk scrape for query '{q}'...")
+                api_url = "https://elevplads.dk/api/posts/get-vacancies"
+                params = {
+                    "query": q,
+                    "future_only": "false",
+                    "page": 1,
+                    "sort": "recommended"
+                }
+                resp = await client.get(api_url, params=params, headers=headers)
+                if resp.status_code != 200:
+                    logger.warning(f"Elevplads.dk API returned {resp.status_code} for query '{q}'")
+                    continue
+                    
+                data = resp.json()
+                posts = data.get("posts", [])
+                logger.info(f"Elevplads.dk returned {len(posts)} posts for query '{q}'")
+                
+                for post in posts:
+                    title = post.get("title", "")
+                    company = post.get("company_name", "") or "Ukendt"
+                    location = post.get("working_place", "")
+                    job_id = str(post.get("id", ""))
+                    link = post.get("link", "")
+                    url = f"https://elevplads.dk{link}" if link else "https://elevplads.dk/find-elevplads"
+                    
+                    postal_match = re.search(r'\b(\d{4})\b', location)
+                    postal = postal_match.group(1) if postal_match else ""
+                    
+                    is_in_region = False
+                    location_lower = location.lower()
+                    midtjylland_keywords = [
+                        "midtjylland", "østjylland", "vestjylland", "aarhus", "randers", 
+                        "horsens", "herning", "silkeborg", "viborg", "holstebro", "skive",
+                        "skanderborg", "ikast", "grenaa", "struer", "odder", "bjerringbro",
+                        "hammel", "hadsten", "hinnerup", "lemvig", "ringkøbing"
+                    ]
+                    
+                    if postal:
+                        if 7400 <= int(postal) <= 8999:
+                            is_in_region = True
+                    else:
+                        if any(kw in location_lower for kw in midtjylland_keywords) or "hele landet" in location_lower:
+                            is_in_region = True
+                            
+                    if is_in_region and is_valid_job(title, postal, company):
+                        jobs.append(format_job(
+                            job_id=job_id,
+                            title=title,
+                            company=company,
+                            url=url,
+                            source="Elevplads"
+                        ))
+            except Exception as e:
+                logger.error(f"Error in elevplads scraper for query '{q}': {e}")
+                
     return jobs
