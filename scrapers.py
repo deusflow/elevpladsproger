@@ -3,6 +3,7 @@ import json
 import asyncio
 from datetime import datetime, timezone
 from playwright.async_api import Page
+import httpx
 import config
 from config import logger
 
@@ -95,63 +96,50 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
     return jobs
 
 async def scrape_jobnet(page: Page) -> list[dict]:
+    """Uses Jobnet's public REST API directly — no browser interaction needed."""
     jobs = []
-    intercepted_data = None
-    
-    async def handle_response(response):
-        nonlocal intercepted_data
-        if "CV/Sogning/Sogning" in response.url and response.request.method == "POST":
-            try:
-                text = await response.text()
-                intercepted_data = json.loads(text)
-            except Exception as e:
-                logger.error(f"Error reading Jobnet response: {e}")
-
     try:
-        logger.info("Starting Jobnet scrape via Playwright interception...")
-        page.on("response", handle_response)
-        await page.goto("https://jobnet.dk/CV/FindWork", wait_until="networkidle", timeout=30000)
-        
-        # Enter "datatekniker" into the search box and trigger search
-        search_input = page.locator("input[type='search']:visible, input[placeholder*='Søg']:visible").first
-        try:
-            await search_input.wait_for(state="visible", timeout=10000)
-            await search_input.fill("datatekniker")
-            await page.keyboard.press("Enter")
-        except Exception:
-            first_input = page.locator("input:visible").first
-            try:
-                await first_input.wait_for(state="visible", timeout=10000)
-                await first_input.fill("datatekniker")
-                await page.keyboard.press("Enter")
-            except Exception as e:
-                logger.warning(f"Could not find search input on Jobnet: {e}")
-                
-        # Wait up to 8 seconds for interception to complete
-        for _ in range(16):
-            if intercepted_data:
-                break
-            await asyncio.sleep(0.5)
-            
-        if intercepted_data and "JobPositionPostings" in intercepted_data:
-            for item in intercepted_data["JobPositionPostings"]:
-                title = item.get("Title", "")
-                company = item.get("CompanyName", "Ukendt")
-                postal = str(item.get("ZipCode", ""))
-                
-                if is_valid_job(title, postal, company):
-                    jobs.append(format_job(
-                        job_id=item.get("ID"),
-                        title=title,
-                        company=company,
-                        url=f"https://jobnet.dk/CV/FindWork/Details/{item.get('ID')}",
-                        source="Jobnet"
-                    ))
+        logger.info("Starting Jobnet scrape via direct API...")
+        # Jobnet public search API — no auth required
+        api_url = "https://job.jobnet.dk/CV/FindWork/SearchWorks"
+        params = {
+            "SearchString": "datatekniker",
+            "RegionIds": "7",  # Region Midtjylland
+            "WorkHours": "",
+            "IncludeLogo": "false",
+            "From": "0",
+            "Size": "100",
+        }
+        headers = {
+            "Accept": "application/json",
+            "Referer": "https://job.jobnet.dk/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.get(api_url, params=params, headers=headers)
+            if resp.status_code != 200:
+                logger.warning(f"Jobnet API returned {resp.status_code}")
+                return jobs
+            data = resp.json()
+
+        postings = data.get("JobPositionPostings", [])
+        logger.info(f"Jobnet API returned {len(postings)} postings")
+        for item in postings:
+            title = item.get("Title", "")
+            company = item.get("CompanyName", "Ukendt")
+            postal = str(item.get("ZipCode", ""))
+            job_id = str(item.get("ID", ""))
+
+            if is_valid_job(title, postal, company):
+                jobs.append(format_job(
+                    job_id=job_id,
+                    title=title,
+                    company=company,
+                    url=f"https://job.jobnet.dk/CV/FindWork/Details/{job_id}",
+                    source="Jobnet"
+                ))
     except Exception as e:
         logger.error(f"Error in Jobnet scraper: {e}")
-    finally:
-        page.remove_listener("response", handle_response)
-        
     return jobs
 
 async def scrape_jobindex(page: Page) -> list[dict]:
@@ -203,44 +191,44 @@ async def scrape_jobindex(page: Page) -> list[dict]:
         logger.error(f"Error in Jobindex scraper: {e}")
     return jobs
 
-async def scrape_linkedin(page: Page) -> list[dict]:
+async def scrape_jobopslag(page: Page) -> list[dict]:
+    """Scrapes Jobopslag.dk — Danish job aggregator, no login required."""
     jobs = []
     try:
-        logger.info("Starting LinkedIn scrape...")
-        url = "https://www.linkedin.com/jobs/search?keywords=Datatekniker&location=Midtjylland%2C%20Denmark&f_TPR=r86400"
-        await page.goto(url, timeout=30000)
-        
+        logger.info("Starting Jobopslag.dk scrape...")
+        url = "https://www.jobopslag.dk/soeg/?q=datatekniker+elev&region=midtjylland"
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
         try:
-            await page.wait_for_selector(".jobs-search__results-list li", timeout=10000)
+            await page.wait_for_selector("article.job-card, .job-listing, .search-result-item", timeout=10000)
         except Exception:
-            logger.warning("No job results list found on LinkedIn.")
+            logger.warning("No job results found on Jobopslag.dk — selector mismatch or no results.")
             return jobs
-            
-        listings = await page.locator(".jobs-search__results-list li").all()
+
+        listings = await page.locator("article.job-card, .job-listing, .search-result-item").all()
+        logger.info(f"Jobopslag.dk found {len(listings)} raw listings")
         for listing in listings:
-            title_el = listing.locator(".base-search-card__title").first
+            title_el = listing.locator("h2 a, h3 a, .job-title a").first
             if not await title_el.count():
                 continue
-                
-            title = await title_el.inner_text()
-            link_el = listing.locator(".base-card__full-link").first
-            url = await link_el.get_attribute("href") if await link_el.count() else ""
-            
-            if url and "?" in url:
-                url = url.split("?")[0]
-                
-            company_el = listing.locator(".base-search-card__subtitle").first
-            company = await company_el.inner_text() if await company_el.count() else "Ukendt"
-            
+            title = (await title_el.inner_text()).strip()
+            href = await title_el.get_attribute("href") or ""
+            job_url = href if href.startswith("http") else f"https://www.jobopslag.dk{href}"
+            if "?" in job_url:
+                job_url = job_url.split("?")[0]
+
+            company_el = listing.locator(".company-name, .employer, .job-company").first
+            company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
+
             if is_valid_job(title, "", company):
-                job_id = url.split("-")[-1] if url else title
+                job_id = job_url.rstrip("/").split("/")[-1] or title
                 jobs.append(format_job(
                     job_id=job_id,
                     title=title,
                     company=company,
-                    url=url,
-                    source="LinkedIn"
+                    url=job_url,
+                    source="Jobopslag"
                 ))
     except Exception as e:
-        logger.error(f"Error in LinkedIn scraper: {e}")
+        logger.error(f"Error in Jobopslag scraper: {e}")
     return jobs

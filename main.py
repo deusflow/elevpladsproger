@@ -107,9 +107,9 @@ async def main():
         all_jobs.extend(jobindex_jobs)
         await asyncio.sleep(2.0)
         
-        # 4. Run LinkedIn
-        linkedin_jobs = await scrapers.scrape_linkedin(page)
-        all_jobs.extend(linkedin_jobs)
+        # 4. Run Jobopslag.dk
+        jobopslag_jobs = await scrapers.scrape_jobopslag(page)
+        all_jobs.extend(jobopslag_jobs)
         
         await browser.close()
 
