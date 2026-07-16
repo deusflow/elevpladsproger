@@ -38,16 +38,16 @@ def escape_markdown_v2(text: str) -> str:
     return "".join(f"\\{c}" if c in escape_chars else c for c in text)
 
 async def notify_telegram(jobs: list[dict]):
-    if not jobs:
-        return
-        
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
         logger.warning("Telegram configuration missing. Notification skipped.")
         return
 
-    message = "*Nye IT Elevpladser (Midtjylland)*\n\n"
-    for job in jobs:
-        title = escape_markdown_v2(job['title'])
+    if not jobs:
+        message = "*No new IT Elevpladser found\\.*"
+    else:
+        message = "*Nye IT Elevpladser (Midtjylland)*\n\n"
+        for job in jobs:
+            title = escape_markdown_v2(job['title'])
         company = escape_markdown_v2(job['company'])
         source = escape_markdown_v2(job['source'])
         url = escape_markdown_v2(job['url'])
@@ -122,8 +122,8 @@ async def main():
 
     logger.info(f"Discovered {len(new_jobs)} new jobs out of {len(all_jobs)} total scanned.")
     
+    await notify_telegram(new_jobs)
     if new_jobs:
-        await notify_telegram(new_jobs)
         save_db(new_jobs)
 
 if __name__ == "__main__":
