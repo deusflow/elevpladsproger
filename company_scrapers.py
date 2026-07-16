@@ -7,7 +7,7 @@ from scrapers import format_job
 logger = logging.getLogger("elevplads_scraper")
 
 async def scrape_custom_companies(page: Page) -> list[dict]:
-    """Generic web crawler for target_companies.json."""
+
     jobs = []
     try:
         with open("target_companies.json", "r", encoding="utf-8") as f:
@@ -16,7 +16,7 @@ async def scrape_custom_companies(page: Page) -> list[dict]:
         logger.error(f"Could not load target_companies.json: {e}")
         return jobs
 
-    logger.info(f"Starting Universal Crawler for {len(companies)} custom companies...")
+    logger.info(f"Crawling {len(companies)} custom companies...")
 
     for company in companies:
         name = company.get("name")

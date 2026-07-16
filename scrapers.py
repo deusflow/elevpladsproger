@@ -58,7 +58,7 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
                 logger.error(f"Error reading Lærepladsen response: {e}")
 
     try:
-        logger.info("Starting Lærepladsen scrape via Playwright interception...")
+        logger.info("Scraping Lærepladsen...")
         page.on("response", handle_response)
         
         # Load the direct search page which automatically triggers the API GET request
@@ -96,13 +96,13 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
     return jobs
 
 async def scrape_jobnet(page: Page) -> list[dict]:
-    """Uses page.evaluate() within the Playwright browser to query Jobnet's BFF search API."""
+
     jobs = []
     try:
-        logger.info("Starting Jobnet scrape via browser BFF evaluation...")
+        logger.info("Scraping Jobnet...")
         await page.goto("https://jobnet.dk/find-job", wait_until="networkidle", timeout=30000)
         
-        # Call the BFF Search endpoint inside the authenticated browser context
+        # Call BFF Search endpoint
         js_code = """
         async () => {
             const url = 'https://jobnet.dk/bff/FindJob/Search?resultsPerPage=100&pageNumber=1&orderType=BestMatch&searchString=datatekniker';
@@ -145,10 +145,10 @@ async def scrape_jobnet(page: Page) -> list[dict]:
     return jobs
 
 async def scrape_itjobbank(page: Page) -> list[dict]:
-    """Scrapes it-jobbank.dk for elevpladser."""
+
     jobs = []
     try:
-        logger.info("Starting IT-Jobbank scrape...")
+        logger.info("Scraping IT-Jobbank...")
         url = "https://www.it-jobbank.dk/job/midtjylland?q=datatekniker"
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
@@ -194,10 +194,10 @@ async def scrape_itjobbank(page: Page) -> list[dict]:
     return jobs
 
 async def scrape_thehub() -> list[dict]:
-    """Uses TheHub.io API directly via httpx."""
+
     jobs = []
     try:
-        logger.info("Starting TheHub.io scrape via API...")
+        logger.info("Scraping TheHub.io...")
         api_url = "https://thehub.io/api/jobs"
         headers = {
             "User-Agent": "Mozilla/5.0",
@@ -254,7 +254,7 @@ async def scrape_thehub() -> list[dict]:
 async def scrape_jobindex(page: Page) -> list[dict]:
     jobs = []
     try:
-        logger.info("Starting Jobindex scrape...")
+        logger.info("Scraping Jobindex...")
         await page.goto("https://www.jobindex.dk/jobsoegning/it/midtjylland?q=datatekniker", timeout=30000)
         try:
             await page.wait_for_selector(".jobsearch-result", timeout=10000)
@@ -301,7 +301,7 @@ async def scrape_jobindex(page: Page) -> list[dict]:
     return jobs
 
 async def scrape_elevplads(page: Page) -> list[dict]:
-    """Uses elevplads.dk's public API to search for IT elevpladser — no browser needed."""
+
     jobs = []
     queries = ["datatekniker", "it-elev", "softwareudvikler", "udvikler-elev", "programmering"]
     
@@ -312,7 +312,7 @@ async def scrape_elevplads(page: Page) -> list[dict]:
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
         for q in queries:
             try:
-                logger.info(f"Starting elevplads.dk scrape for query '{q}'...")
+                logger.info(f"Scraping Elevplads.dk for '{q}'...")
                 api_url = "https://elevplads.dk/api/posts/get-vacancies"
                 params = {
                     "query": q,

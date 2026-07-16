@@ -88,7 +88,7 @@ async def notify_telegram(jobs: list[dict]):
 async def main():
     logger.info("Starting scrape run...")
     
-    # Load and clean old jobs (Retention logic: older than 30 days)
+    # Clean jobs older than 30 days
     old_jobs = load_jobs()
     now = datetime.now()
     retained_jobs = {}
@@ -106,10 +106,10 @@ async def main():
     
     all_jobs = []
 
-    # HTTPX Scrapers (No browser)
+    # API Scrapers
     all_jobs.extend(await scrapers.scrape_thehub())
 
-    # Playwright Scrapers
+    # Browser Scrapers
     async with async_playwright() as p:
         browser_args = {
             "headless": True
