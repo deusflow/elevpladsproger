@@ -107,7 +107,6 @@ async def main():
     all_jobs = []
 
     # HTTPX Scrapers (No browser)
-    all_jobs.extend(await scrapers.scrape_laerepladsen())
     all_jobs.extend(await scrapers.scrape_elevplads())
     all_jobs.extend(await scrapers.scrape_thehub())
 
@@ -127,6 +126,7 @@ async def main():
         page = await context.new_page()
         
         # Run standard scrapers
+        all_jobs.extend(await scrapers.scrape_laerepladsen(page))
         all_jobs.extend(await scrapers.scrape_jobnet(page))
         all_jobs.extend(await scrapers.scrape_jobindex(page))
         all_jobs.extend(await scrapers.scrape_itjobbank(page))
