@@ -1,6 +1,6 @@
 import json
 import logging
-from playwright.async_api import Page
+from patchright.async_api import Page
 import config
 from scrapers import format_job
 
