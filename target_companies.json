@@ -45,15 +45,11 @@
     },
     {
         "name": "Systematic",
-        "url": "https://systematic.com/da-dk/karriere/ledige-stillinger/"
+        "url": "https://systematic.com/int/careers/"
     },
     {
         "name": "Netcompany",
-        "url": "https://www.netcompany.com/da/Karriere/Ledige-stillinger"
-    },
-    {
-        "name": "Trifork",
-        "url": "https://trifork.com/careers/jobs/"
+        "url": "https://netcompany.com/careers/vacancies/"
     },
     {
         "name": "Vestas",
@@ -61,7 +57,7 @@
     },
     {
         "name": "Salling Group",
-        "url": "https://sallinggroup.com/karriere/ledige-stillinger"
+        "url": "https://sallinggroup.com/job/ledige-stillinger"
     },
     {
         "name": "Jyske Bank",
@@ -69,7 +65,7 @@
     },
     {
         "name": "Danske Bank",
-        "url": "https://danskebank.com/da/karriere/sog-job"
+        "url": "https://www.jyskebank.dk/om-os/job-og-karriere/ledige-jobs"
     },
     {
         "name": "Terma",
@@ -77,6 +73,6 @@
     },
     {
         "name": "Aarhus Kommune",
-        "url": "https://www.aarhus.dk/job/ledige-job/"
+        "url": "https://aarhus.dk/job/aarhus-kommune-som-uddannelsessted/elev"
     }
 ]
