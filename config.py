@@ -19,6 +19,17 @@ PROXY_URL = os.getenv("PROXY_URL")
 DB_FILE = "jobs_db.json"
 TARGET_POSTAL_CODES = set(map(str, range(7400, 9000)))
 
+GIST_TOKEN = os.getenv("GIST_TOKEN")
+GIST_ID = os.getenv("GIST_ID")
+
+MIDTJYLLAND_CITIES = [
+    "aarhus", "randers", "silkeborg", "horsens", "herning", 
+    "viborg", "holstebro", "skive", "ikast", "brande", 
+    "odder", "hinnerup", "skanderborg", "bjerringbro", 
+    "hadsten", "hammel", "lemvig", "struer", "grenaa", "ebeltoft"
+]
+
+
 # Strict role keywords
 # Only Datatekniker - Programmering & Cybersecurity
 TARGET_KEYWORDS = [

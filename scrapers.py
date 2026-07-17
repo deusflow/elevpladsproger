@@ -8,14 +8,25 @@ import httpx
 import config
 from config import logger
 
-def is_valid_job(title: str, postal_code: str, company: str = "") -> bool:
+def is_valid_job(title: str, postal_code: str, company: str = "", location: str = "") -> bool:
     title_lower = title.lower()
     company_lower = company.lower()
+    location_lower = location.lower()
     
-    # Check postal code (Midtjylland 7400-8999) if provided
+    # Geolocation filtering
+    is_in_region = False
     if postal_code and postal_code.isdigit():
-        if not (7400 <= int(postal_code) <= 8999):
-            return False
+        if 7400 <= int(postal_code) <= 8999:
+            is_in_region = True
+    else:
+        if not location_lower:
+            location_lower = title_lower + " " + company_lower
+            
+        if any(city in location_lower for city in config.MIDTJYLLAND_CITIES) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower:
+            is_in_region = True
+            
+    if not is_in_region:
+        return False
             
     # Check exclusions first
     for ex in config.EXCLUDE_KEYWORDS:
@@ -191,7 +202,7 @@ async def scrape_itjobbank(page: Page) -> list[dict]:
             postal_match = re.search(r'\b(\d{4})\b', location_text)
             postal = postal_match.group(1) if postal_match else ""
 
-            if is_valid_job(title, postal, company):
+            if is_valid_job(title, postal, company, location_text):
                 job_id = job_url.rstrip("/").split("/")[-1] or title
                 jobs.append(format_job(
                     job_id=job_id,
@@ -255,7 +266,8 @@ async def scrape_thehub() -> list[dict]:
                     else:
                         url = f"https://thehub.io/jobs?jobId={job_id}"
                     
-                    if is_valid_job(title, postal, company):
+                    location_str = str(locations) if locations else ""
+                    if is_valid_job(title, postal, company, location_str):
                         jobs.append(format_job(
                             job_id=job_id,
                             title=title,
@@ -303,7 +315,7 @@ async def scrape_jobindex(page: Page) -> list[dict]:
                 postal_match = re.search(r'\b(\d{4})\b', location_text)
                 postal = postal_match.group(1) if postal_match else ""
             
-            if is_valid_job(title, postal, company):
+            if is_valid_job(title, postal, company, location_text):
                 job_id = url.split("/")[-1] if url else title
                 jobs.append(format_job(
                     job_id=job_id,
@@ -361,23 +373,7 @@ async def scrape_elevplads(page: Page) -> list[dict]:
                     postal_match = re.search(r'\b(\d{4})\b', location)
                     postal = postal_match.group(1) if postal_match else ""
                     
-                    is_in_region = False
-                    location_lower = location.lower()
-                    midtjylland_keywords = [
-                        "midtjylland", "østjylland", "vestjylland", "aarhus", "randers", 
-                        "horsens", "herning", "silkeborg", "viborg", "holstebro", "skive",
-                        "skanderborg", "ikast", "grenaa", "struer", "odder", "bjerringbro",
-                        "hammel", "hadsten", "hinnerup", "lemvig", "ringkøbing"
-                    ]
-                    
-                    if postal:
-                        if 7400 <= int(postal) <= 8999:
-                            is_in_region = True
-                    else:
-                        if any(kw in location_lower for kw in midtjylland_keywords) or "hele landet" in location_lower:
-                            is_in_region = True
-                            
-                    if is_in_region and is_valid_job(title, postal, company):
+                    if is_valid_job(title, postal, company, location):
                         jobs.append(format_job(
                             job_id=job_id,
                             title=title,

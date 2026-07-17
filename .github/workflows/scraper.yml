@@ -30,13 +30,11 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PROXY_URL: ${{ secrets.PROXY_URL }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ secrets.GIST_ID }}
         run: python main.py
 
-      - name: Commit state
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "chore: update jobs database"
-          file_pattern: "jobs_db.json"
+
 
       - name: Upload error screenshots
         uses: actions/upload-artifact@v4

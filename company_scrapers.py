@@ -6,7 +6,44 @@ from patchright.async_api import BrowserContext, Page
 import config
 from scrapers import format_job
 
+from tenacity import retry, stop_after_attempt, wait_fixed
+
 logger = logging.getLogger("elevplads_scraper")
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+async def _do_scrape_company(page: Page, url: str):
+    await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+    
+    links = await page.locator("a").all()
+    found_jobs = []
+    
+    for link in links:
+        try:
+            text = (await link.inner_text()).lower()
+            href = await link.get_attribute("href")
+            if not href: continue
+            
+            if "datatekniker" in text or "it-supporter" in text or "it-elev" in text or "elevplads" in text:
+                if href.startswith("http"):
+                    job_url = href
+                else:
+                    job_url = url.rstrip("/") + "/" + href.lstrip("/")
+                    
+                found_jobs.append({
+                    "title": f"Mulig stilling: {(await link.inner_text()).strip()}",
+                    "url": job_url
+                })
+        except Exception:
+            pass
+            
+    # Structural hash
+    body_text = await page.inner_text("body")
+    a_count = await page.locator("a").count()
+    iframe_count = await page.locator("iframe").count()
+    structural_hash = hash(f"{len(body_text)}_{a_count}_{iframe_count}")
+    
+    return found_jobs, body_text, structural_hash
+
 
 async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Semaphore) -> list[dict]:
     name = company.get("name")
@@ -19,44 +56,34 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
         page = await context.new_page()
         jobs = []
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            found_jobs, body_text, structural_hash = await _do_scrape_company(page, url)
             
-            links = await page.locator("a").all()
-            found_job_link = False
-            for link in links:
-                try:
-                    text = (await link.inner_text()).lower()
-                    href = await link.get_attribute("href")
-                    if not href: continue
-                    
-                    if "datatekniker" in text or "it-supporter" in text or "it-elev" in text or "elevplads" in text:
-                        if href.startswith("http"):
-                            job_url = href
-                        else:
-                            job_url = url.rstrip("/") + "/" + href.lstrip("/")
-                            
-                        job_id = job_url.split("/")[-1] or job_url
-                        jobs.append(format_job(
-                            job_id=job_id,
-                            title=f"Mulig stilling: {(await link.inner_text()).strip()}",
-                            company=name,
-                            url=job_url,
-                            source="UniversalCrawler"
-                        ))
-                        found_job_link = True
-                except Exception:
-                    pass
-            
-            if not found_job_link:
-                body_text = await page.inner_text("body")
-                if "datatekniker" in body_text.lower():
-                     jobs.append(format_job(
-                        job_id=f"custom_{name.replace(' ', '_').lower()}",
-                        title="Mulig IT-stilling fundet i teksten på siden!",
+            if found_jobs:
+                for fj in found_jobs:
+                    job_id = fj["url"].split("/")[-1] or fj["url"]
+                    jobs.append(format_job(
+                        job_id=job_id,
+                        title=fj["title"],
                         company=name,
-                        url=url,
+                        url=fj["url"],
                         source="UniversalCrawler"
                     ))
+            elif "datatekniker" in body_text.lower():
+                jobs.append(format_job(
+                    job_id=f"custom_{name.replace(' ', '_').lower()}",
+                    title="Mulig IT-stilling fundet i teksten på siden!",
+                    company=name,
+                    url=url,
+                    source="UniversalCrawler"
+                ))
+            else:
+                # Return hash object for state diffing
+                jobs.append({
+                    "type": "hash",
+                    "company": name,
+                    "url": url,
+                    "hash": str(structural_hash)
+                })
         except Exception as e:
             logger.error(f"Failed to crawl {name} ({url}): {e}")
             try:
