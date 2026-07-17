@@ -42,5 +42,41 @@
     {
         "name": "PriceShape",
         "url": "https://careers.priceshape.com/jobs?location_id=885710"
+    },
+    {
+        "name": "Systematic",
+        "url": "https://systematic.com/da-dk/karriere/ledige-stillinger/"
+    },
+    {
+        "name": "Netcompany",
+        "url": "https://www.netcompany.com/da/Karriere/Ledige-stillinger"
+    },
+    {
+        "name": "Trifork",
+        "url": "https://trifork.com/careers/jobs/"
+    },
+    {
+        "name": "Vestas",
+        "url": "https://careers.vestas.com/search/"
+    },
+    {
+        "name": "Salling Group",
+        "url": "https://sallinggroup.com/karriere/ledige-stillinger"
+    },
+    {
+        "name": "Jyske Bank",
+        "url": "https://www.jyskebank.dk/karriere/ledigejob"
+    },
+    {
+        "name": "Danske Bank",
+        "url": "https://danskebank.com/da/karriere/sog-job"
+    },
+    {
+        "name": "Terma",
+        "url": "https://www.terma.com/careers/jobs/"
+    },
+    {
+        "name": "Aarhus Kommune",
+        "url": "https://www.aarhus.dk/job/ledige-job/"
     }
 ]

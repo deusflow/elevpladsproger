@@ -33,24 +33,24 @@ MIDTJYLLAND_CITIES = [
 # Strict role keywords
 # Only Datatekniker - Programmering & Cybersecurity
 TARGET_KEYWORDS = [
-    "programmering",
-    "cybersikkerhed",
-    "it-sikkerhed",
-    "cyber security",
-    "software",
-    "developer",
-    "udvikler"
+    "programmering", "cybersikkerhed", "it-sikkerhed", "cyber security",
+    "cybersecurity", "software", "developer", "udvikler", "udvikling"
 ]
 
 # We want to be sure it's an apprenticeship/elevplads
 ELEV_KEYWORDS = ["elev", "lærling", "apprenticeship"]
 
 EXCLUDE_KEYWORDS = [
-    "it-supporter",
+    "supporter",
     "infrastruktur",
-    "systemadministrator",
     "support",
+    "drift",
     "helpdesk",
+    "studiejob",
+    "student",
+    "studentermedhjælper",
+    "intern",
+    "internship",
     "netværk",
     "grundfos"
 ]

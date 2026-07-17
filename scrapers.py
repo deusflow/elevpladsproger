@@ -39,10 +39,19 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
     # Check for target keywords
     has_target_skill = any(inc in title_lower for inc in config.TARGET_KEYWORDS)
     is_elev = "datatekniker" in title_lower or any(e in title_lower for e in config.ELEV_KEYWORDS)
+    is_it_role = "datatekniker" in title_lower or "it" in title_lower.split() or "it-" in title_lower or "data" in title_lower
     
-    if (has_target_skill and is_elev) or (is_target_enterprise and is_elev):
+    if is_target_enterprise and is_elev:
         return True
-            
+        
+    if has_target_skill and is_elev:
+        return True
+        
+    # Since we strictly filter out supporter/infrastructure/student jobs above, 
+    # any remaining "datatekniker" or "IT-elev" role is highly likely relevant
+    if is_elev and is_it_role:
+        return True
+        
     return False
 
 def format_job(job_id: str, title: str, company: str, url: str, source: str) -> dict:
