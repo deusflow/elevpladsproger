@@ -1,6 +1,7 @@
 import re
 import json
 import asyncio
+import os
 from datetime import datetime, timezone
 from patchright.async_api import Page
 import httpx
@@ -90,6 +91,11 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
                         ))
     except Exception as e:
         logger.error(f"Error in Lærepladsen scraper: {e}")
+        try:
+            os.makedirs("screenshots", exist_ok=True)
+            await page.screenshot(path="screenshots/laerepladsen_error.png")
+        except Exception as se:
+            logger.error(f"Could not take screenshot for Lærepladsen: {se}")
     finally:
         page.remove_listener("response", handle_response)
         
@@ -142,6 +148,11 @@ async def scrape_jobnet(page: Page) -> list[dict]:
                 ))
     except Exception as e:
         logger.error(f"Error in Jobnet scraper: {e}")
+        try:
+            os.makedirs("screenshots", exist_ok=True)
+            await page.screenshot(path="screenshots/jobnet_error.png")
+        except Exception as se:
+            logger.error(f"Could not take screenshot for Jobnet: {se}")
     return jobs
 
 async def scrape_itjobbank(page: Page) -> list[dict]:
@@ -191,6 +202,11 @@ async def scrape_itjobbank(page: Page) -> list[dict]:
                 ))
     except Exception as e:
         logger.error(f"Error in IT-Jobbank scraper: {e}")
+        try:
+            os.makedirs("screenshots", exist_ok=True)
+            await page.screenshot(path="screenshots/itjobbank_error.png")
+        except Exception as se:
+            logger.error(f"Could not take screenshot for IT-Jobbank: {se}")
     return jobs
 
 async def scrape_thehub() -> list[dict]:
@@ -298,6 +314,11 @@ async def scrape_jobindex(page: Page) -> list[dict]:
                 ))
     except Exception as e:
         logger.error(f"Error in Jobindex scraper: {e}")
+        try:
+            os.makedirs("screenshots", exist_ok=True)
+            await page.screenshot(path="screenshots/jobindex_error.png")
+        except Exception as se:
+            logger.error(f"Could not take screenshot for Jobindex: {se}")
     return jobs
 
 async def scrape_elevplads(page: Page) -> list[dict]:

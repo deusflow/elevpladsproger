@@ -4,3 +4,4 @@ __pycache__/
 venv/
 env/
 jobs_db.json
+screenshots/

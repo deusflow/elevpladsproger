@@ -1,32 +1,25 @@
 import json
 import logging
-from patchright.async_api import Page
+import asyncio
+import os
+from patchright.async_api import BrowserContext, Page
 import config
 from scrapers import format_job
 
 logger = logging.getLogger("elevplads_scraper")
 
-async def scrape_custom_companies(page: Page) -> list[dict]:
-
-    jobs = []
-    try:
-        with open("target_companies.json", "r", encoding="utf-8") as f:
-            companies = json.load(f)
-    except Exception as e:
-        logger.error(f"Could not load target_companies.json: {e}")
-        return jobs
-
-    logger.info(f"Crawling {len(companies)} custom companies...")
-
-    for company in companies:
-        name = company.get("name")
-        url = company.get("url")
-        if not name or not url:
-            continue
-            
+async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Semaphore) -> list[dict]:
+    name = company.get("name")
+    url = company.get("url")
+    if not name or not url:
+        return []
+        
+    async with sem:
         logger.info(f"Crawling {name}: {url}")
+        page = await context.new_page()
+        jobs = []
         try:
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=25000)
             
             links = await page.locator("a").all()
             found_job_link = False
@@ -40,7 +33,6 @@ async def scrape_custom_companies(page: Page) -> list[dict]:
                         if href.startswith("http"):
                             job_url = href
                         else:
-                            # Basic relative path handling
                             job_url = url.rstrip("/") + "/" + href.lstrip("/")
                             
                         job_id = job_url.split("/")[-1] or job_url
@@ -56,7 +48,6 @@ async def scrape_custom_companies(page: Page) -> list[dict]:
                     pass
             
             if not found_job_link:
-                # Fallback: check whole page body just in case it's not an a-tag but a div or span
                 body_text = await page.inner_text("body")
                 if "datatekniker" in body_text.lower():
                      jobs.append(format_job(
@@ -66,8 +57,38 @@ async def scrape_custom_companies(page: Page) -> list[dict]:
                         url=url,
                         source="UniversalCrawler"
                     ))
-                    
         except Exception as e:
             logger.error(f"Failed to crawl {name} ({url}): {e}")
+            try:
+                os.makedirs("screenshots", exist_ok=True)
+                safe_name = name.replace(' ', '_').lower()
+                screenshot_path = f"screenshots/{safe_name}_error.png"
+                await page.screenshot(path=screenshot_path)
+                logger.info(f"Saved error screenshot for {name} to {screenshot_path}")
+            except Exception as se:
+                logger.error(f"Failed to capture screenshot for {name}: {se}")
+        finally:
+            await page.close()
             
+        return jobs
+
+async def scrape_custom_companies(context: BrowserContext) -> list[dict]:
+    jobs = []
+    try:
+        with open("target_companies.json", "r", encoding="utf-8") as f:
+            companies = json.load(f)
+    except Exception as e:
+        logger.error(f"Could not load target_companies.json: {e}")
+        return jobs
+
+    logger.info(f"Crawling {len(companies)} custom companies in parallel...")
+    
+    sem = asyncio.Semaphore(3)
+    tasks = [scrape_company(context, company, sem) for company in companies]
+    results = await asyncio.gather(*tasks)
+    
+    for sublist in results:
+        jobs.extend(sublist)
+        
     return jobs
+

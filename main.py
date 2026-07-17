@@ -132,7 +132,7 @@ async def main():
         all_jobs.extend(await scrapers.scrape_itjobbank(page))
         
         # Custom Corporate Scrapers
-        all_jobs.extend(await company_scrapers.scrape_custom_companies(page))
+        all_jobs.extend(await company_scrapers.scrape_custom_companies(context))
 
         await browser.close()
 
