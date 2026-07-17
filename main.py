@@ -7,35 +7,33 @@ from patchright.async_api import async_playwright
 
 import scrapers
 import company_scrapers
-from config import DB_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, PROXY_URL, GIST_TOKEN, GIST_ID, logger
+from config import DB_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, PROXY_URL, SUPABASE_URL, SUPABASE_KEY, logger
 import config
 
 async def load_state() -> dict:
     state = {"jobs": [], "company_hashes": {}}
     
-    # Try Gist first
-    if GIST_TOKEN and GIST_ID:
-        url = f"https://api.github.com/gists/{GIST_ID}"
+    # Try Supabase first
+    if SUPABASE_URL and SUPABASE_KEY:
+        url = f"{SUPABASE_URL}/rest/v1/state?key=eq.scraper_state&select=value"
         headers = {
-            "Authorization": f"token {GIST_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}"
         }
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.get(url, headers=headers, timeout=10.0)
                 if resp.status_code == 200:
                     data = resp.json()
-                    files = data.get("files", {})
-                    if "state.json" in files:
-                        content = files["state.json"]["content"]
-                        loaded = json.loads(content)
+                    if data and isinstance(data, list):
+                        loaded = data[0].get("value", {})
                         if isinstance(loaded, dict) and "jobs" in loaded:
                             state = loaded
                         elif isinstance(loaded, list):
                             state["jobs"] = loaded
                     return state
             except Exception as e:
-                logger.error(f"Failed to load state from Gist: {e}")
+                logger.error(f"Failed to load state from Supabase: {e}")
                 
     # Fallback to local DB_FILE
     if os.path.exists(DB_FILE):
@@ -52,30 +50,33 @@ async def load_state() -> dict:
     return state
 
 async def save_state(state: dict):
-    # Try Gist first
-    if GIST_TOKEN and GIST_ID:
-        url = f"https://api.github.com/gists/{GIST_ID}"
+    # Try Supabase first
+    if SUPABASE_URL and SUPABASE_KEY:
+        url_check = f"{SUPABASE_URL}/rest/v1/state?key=eq.scraper_state&select=key"
         headers = {
-            "Authorization": f"token {GIST_TOKEN}",
-            "Accept": "application/vnd.github.v3+json"
-        }
-        payload = {
-            "files": {
-                "state.json": {
-                    "content": json.dumps(state, ensure_ascii=False, indent=2)
-                }
-            }
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
         }
         async with httpx.AsyncClient() as client:
             try:
-                resp = await client.patch(url, headers=headers, json=payload, timeout=10.0)
-                if resp.status_code == 200:
-                    logger.info("Saved state to GitHub Gist.")
+                check_resp = await client.get(url_check, headers=headers, timeout=10.0)
+                row_exists = check_resp.status_code == 200 and len(check_resp.json()) > 0
+                
+                if row_exists:
+                    url_patch = f"{SUPABASE_URL}/rest/v1/state?key=eq.scraper_state"
+                    resp = await client.patch(url_patch, headers=headers, json={"value": state}, timeout=10.0)
+                else:
+                    url_post = f"{SUPABASE_URL}/rest/v1/state"
+                    resp = await client.post(url_post, headers=headers, json={"key": "scraper_state", "value": state}, timeout=10.0)
+                    
+                if resp.status_code in [200, 201, 204]:
+                    logger.info("Saved state to Supabase.")
                     return
                 else:
-                    logger.error(f"Failed to save state to Gist: {resp.text}")
+                    logger.error(f"Failed to save state to Supabase (status {resp.status_code}): {resp.text}")
             except Exception as e:
-                logger.error(f"Error saving to Gist: {e}")
+                logger.error(f"Error saving to Supabase: {e}")
                 
     # Fallback to local
     with open(DB_FILE, "w", encoding="utf-8") as f:
