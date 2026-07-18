@@ -5,42 +5,54 @@ import os
 from patchright.async_api import BrowserContext, Page
 import config
 import hashlib
+from playwright_stealth import stealth_async
 from scrapers import format_job
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 logger = logging.getLogger("elevplads_scraper")
 
+async def extract_links_from_frame(frame, url, found_jobs):
+    try:
+        links = await frame.locator("a").all()
+        for link in links:
+            try:
+                text = (await link.inner_text()).lower()
+                href = await link.get_attribute("href")
+                if not href: continue
+                
+                if "datatekniker" in text or "it-supporter" in text or "it-elev" in text or "elevplads" in text:
+                    if href.startswith("http"):
+                        job_url = href
+                    else:
+                        job_url = url.rstrip("/") + "/" + href.lstrip("/")
+                        
+                    found_jobs.append({
+                        "title": f"Mulig stilling: {(await link.inner_text()).strip()}",
+                        "url": job_url
+                    })
+            except Exception:
+                pass
+    except Exception:
+        pass
+        
+    for child in frame.child_frames:
+        await extract_links_from_frame(child, url, found_jobs)
+
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
 async def _do_scrape_company(page: Page, url: str):
-    await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+    await page.goto(url, wait_until="networkidle", timeout=30000)
+    await page.wait_for_timeout(2000) # Give extra time for JS/Iframes to render
     
-    links = await page.locator("a").all()
     found_jobs = []
-    
-    for link in links:
-        try:
-            text = (await link.inner_text()).lower()
-            href = await link.get_attribute("href")
-            if not href: continue
-            
-            if "datatekniker" in text or "it-supporter" in text or "it-elev" in text or "elevplads" in text:
-                if href.startswith("http"):
-                    job_url = href
-                else:
-                    job_url = url.rstrip("/") + "/" + href.lstrip("/")
-                    
-                found_jobs.append({
-                    "title": f"Mulig stilling: {(await link.inner_text()).strip()}",
-                    "url": job_url
-                })
-        except Exception:
-            pass
+    await extract_links_from_frame(page.main_frame, url, found_jobs)
             
     # Structural hash (using deterministic MD5 instead of Python's process-randomized hash())
+    # Round length to nearest 100 to avoid noisy changes from minor dynamic content
     body_text = await page.inner_text("body")
+    rounded_len = len(body_text) // 100 * 100
     a_count = await page.locator("a").count()
     iframe_count = await page.locator("iframe").count()
-    structural_hash = hashlib.md5(f"{len(body_text)}_{a_count}_{iframe_count}".encode()).hexdigest()
+    structural_hash = hashlib.md5(f"{rounded_len}_{a_count}_{iframe_count}".encode()).hexdigest()
     
     return found_jobs, body_text, structural_hash
 
@@ -54,6 +66,7 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
     async with sem:
         logger.info(f"Crawling {name}: {url}")
         page = await context.new_page()
+        await stealth_async(page)
         jobs = []
         try:
             found_jobs, body_text, structural_hash = await _do_scrape_company(page, url)

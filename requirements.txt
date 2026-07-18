@@ -3,3 +3,4 @@ patchright==1.61.2
 setuptools<70
 tenacity==8.3.0
 
+playwright-stealth

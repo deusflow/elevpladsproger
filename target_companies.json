@@ -8,6 +8,26 @@
         "url": "https://thise.dk/om-thise/job-hos-thise"
     },
     {
+        "name": "Siemens Gamesa",
+        "url": "https://jobs.siemens-energy.com/en_US/jobs/Jobs/siemens%20gamesa?listFilterMode=1&folderRecordsPerPage=20&"
+    },
+    {
+        "name": "Eurowind Energy",
+        "url": "https://eurowindenergy.com/career/"
+    },
+    {
+        "name": "Grundfos",
+        "url": "https://jobs.grundfos.com/"
+    },
+    {
+        "name": "Norlys",
+        "url": "https://www.job-karriere.dk/Norlys/go/Norlys-All-Jobs/9241201/"
+    },
+    {
+        "name": "DEIF",
+        "url": "https://career.deif.com/recruitment/job-openings/"
+    },
+    {
         "name": "Skovgaard Energy",
         "url": "https://candidate.hr-manager.net/vacancies/list.aspx?customer=skovgaardenergy"
     },
@@ -16,8 +36,44 @@
         "url": "https://www.aalborgforsyning.dk/karriere/ledige-stillinger/"
     },
     {
-        "name": "Norlys",
-        "url": "https://www.job-karriere.dk/Norlys/go/Norlys-All-Jobs/9241201/"
+        "name": "DAO pakkeshop",
+        "url": "https://dao.career.emply.com/da/ledige-stillinger"
+    },
+    {
+        "name": "PriceShape",
+        "url": "https://careers.priceshape.com/jobs?location_id=885710"
+    },
+    {
+        "name": "Systematic",
+        "url": "https://systematic.com/da-dk/karriere/ledige-stillinger/"
+    },
+    {
+        "name": "Netcompany",
+        "url": "https://www.netcompany.com/da/Karriere/Ledige-stillinger"
+    },
+    {
+        "name": "Trifork",
+        "url": "https://trifork.com/careers/jobs/"
+    },
+    {
+        "name": "Vestas",
+        "url": "https://careers.vestas.com/search/"
+    },
+    {
+        "name": "Salling Group",
+        "url": "https://sallinggroup.com/job/ledige-stillinger"
+    },
+    {
+        "name": "Jyske Bank",
+        "url": "https://www.jyskebank.dk/karriere/ledigejob"
+    },
+    {
+        "name": "Danske Bank",
+        "url": "https://danskebank.com/da/karriere/soeg-job"
+    },
+    {
+        "name": "Terma",
+        "url": "https://www.terma.com/careers/jobs/"
     },
     {
         "name": "Aarhus Kommune",
