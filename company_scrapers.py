@@ -4,8 +4,8 @@ import asyncio
 import os
 from patchright.async_api import BrowserContext, Page
 import config
+import hashlib
 from scrapers import format_job
-
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 logger = logging.getLogger("elevplads_scraper")
@@ -36,11 +36,11 @@ async def _do_scrape_company(page: Page, url: str):
         except Exception:
             pass
             
-    # Structural hash
+    # Structural hash (using deterministic MD5 instead of Python's process-randomized hash())
     body_text = await page.inner_text("body")
     a_count = await page.locator("a").count()
     iframe_count = await page.locator("iframe").count()
-    structural_hash = hash(f"{len(body_text)}_{a_count}_{iframe_count}")
+    structural_hash = hashlib.md5(f"{len(body_text)}_{a_count}_{iframe_count}".encode()).hexdigest()
     
     return found_jobs, body_text, structural_hash
 

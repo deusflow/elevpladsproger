@@ -204,12 +204,12 @@ async def main():
             c_name = item["company"]
             c_hash = item["hash"]
             old_hash = old_company_hashes.get(c_name)
-            
-            # If hash changed (and we had an old hash to compare to)
-            if old_hash and old_hash != c_hash:
+            # If hash changed (and we had a valid MD5 old hash to compare to)
+            # Avoid false alerts if old_hash was a process-randomized integer hash
+            if old_hash and str(old_hash) != str(c_hash) and not str(old_hash).lstrip('-').isdigit():
                 changed_companies.append(item)
                 
-            new_company_hashes[c_name] = c_hash
+            new_company_hashes[c_name] = str(c_hash)
         else:
             if item["job_id"] not in existing_ids:
                 item["discovered_at"] = datetime.now().isoformat()
