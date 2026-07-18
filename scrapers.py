@@ -19,10 +19,9 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
         if 7400 <= int(postal_code) <= 8999:
             is_in_region = True
     else:
-        if not location_lower:
-            location_lower = title_lower + " " + company_lower
-            
-        if any(city in location_lower for city in config.MIDTJYLLAND_CITIES) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower:
+        import re
+        city_pattern = r'\b(?:' + '|'.join(map(re.escape, config.MIDTJYLLAND_CITIES)) + r')\b'
+        if re.search(city_pattern, location_lower) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower:
             is_in_region = True
             
     if not is_in_region:
@@ -37,8 +36,13 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
     # Target enterprises logic
     is_target_enterprise = any(ent in company_lower for ent in config.TARGET_ENTERPRISES)
 
-    # Check for target keywords
-    has_target_skill = any(inc in title_lower for inc in config.TARGET_KEYWORDS)
+    # Check for target keywords using word boundaries to avoid false positives
+    has_target_skill = False
+    for inc in config.TARGET_KEYWORDS:
+        if re.search(r'\b' + re.escape(inc) + r'\b', title_lower):
+            has_target_skill = True
+            break
+            
     is_elev = "datatekniker" in title_lower or any(e in title_lower for e in config.ELEV_KEYWORDS)
     is_it_role = "datatekniker" in title_lower or "it" in title_lower.split() or "it-" in title_lower or "data" in title_lower
     
@@ -215,7 +219,9 @@ async def scrape_itjobbank(page: Page) -> list[dict]:
                 postal = postal_match.group(1) if postal_match else ""
 
                 if is_valid_job(title, postal, company, location_text):
-                    job_id = job_url.rstrip("/").split("/")[-1] or title
+                    import hashlib
+                    job_id_str = f"{company}_{title}_{job_url}"
+                    job_id = hashlib.md5(job_id_str.encode()).hexdigest()
                     jobs.append(format_job(
                         job_id=job_id,
                         title=title,
@@ -331,7 +337,9 @@ async def scrape_jobindex(page: Page) -> list[dict]:
                     postal = postal_match.group(1) if postal_match else ""
                 
                 if is_valid_job(title, postal, company, location_text):
-                    job_id = url.split("/")[-1] if url else title
+                    import hashlib
+                    job_id_str = f"{company}_{title}_{url}"
+                    job_id = hashlib.md5(job_id_str.encode()).hexdigest()
                     jobs.append(format_job(
                         job_id=job_id,
                         title=title,

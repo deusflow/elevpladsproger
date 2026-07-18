@@ -32,11 +32,17 @@ async def load_state() -> dict:
                         elif isinstance(loaded, list):
                             state["jobs"] = loaded
                     return state
+                else:
+                    logger.error(f"Supabase returned status {resp.status_code}. Aborting to prevent local data overwrite.")
+                    import sys
+                    sys.exit(1)
             except Exception as e:
-                logger.error(f"Failed to load state from Supabase: {e}")
+                logger.error(f"Failed to connect to Supabase: {e}. Aborting execution.")
+                import sys
+                sys.exit(1)
                 
-    # Fallback to local DB_FILE
-    if os.path.exists(DB_FILE):
+    # Fallback to local DB_FILE only if Supabase is not configured
+    elif os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
@@ -95,27 +101,39 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict]):
 
     messages = []
     
-    if jobs:
-        msg = "*Nye IT Elevpladser (Midtjylland)*\n\n"
-        for job in jobs:
-            title = escape_markdown_v2(job['title'])
-            company = escape_markdown_v2(job['company'])
-            source = escape_markdown_v2(job['source'])
-            url = escape_markdown_v2(job['url'])
-            
-            msg += f"🔹 *{title}*\n"
-            msg += f"🏢 {company} ({source})\n"
-            msg += f"🔗 [Ansøg her]({url})\n\n"
-        messages.append(msg)
+    current_msg = "*Nye IT Elevpladser (Midtjylland)*\n\n" if jobs else ""
+    for job in jobs:
+        title = escape_markdown_v2(job['title'])
+        company = escape_markdown_v2(job['company'])
+        source = escape_markdown_v2(job['source'])
+        url = escape_markdown_v2(job['url'])
         
+        job_str = f"🔹 *{title}*\n🏢 {company} ({source})\n🔗 [Ansøg her]({url})\n\n"
+        
+        if len(current_msg) + len(job_str) > 4000:
+            messages.append(current_msg)
+            current_msg = job_str
+        else:
+            current_msg += job_str
+            
+    if current_msg and jobs:
+        messages.append(current_msg)
+        
+    current_msg = "⚠️ *Ændringer opdaget på karrieresider*\n\n" if changed_companies else ""
     if changed_companies:
-        msg = "⚠️ *Ændringer opdaget på karrieresider*\n\n"
-        msg += "Strukturen på følgende sider er ændret\\. Der er måske en skjult elevplads:\n\n"
+        current_msg += "Strukturen på følgende sider er ændret\\. Der er måske en skjult elevplads:\n\n"
         for comp in changed_companies:
             company = escape_markdown_v2(comp['company'])
             url = escape_markdown_v2(comp['url'])
-            msg += f"🏢 *{company}*\n🔗 [Tjek manuelt]({url})\n\n"
-        messages.append(msg)
+            comp_str = f"🏢 *{company}*\n🔗 [Tjek manuelt]({url})\n\n"
+            if len(current_msg) + len(comp_str) > 4000:
+                messages.append(current_msg)
+                current_msg = comp_str
+            else:
+                current_msg += comp_str
+                
+    if current_msg and changed_companies:
+        messages.append(current_msg)
         
     if not messages:
         return
@@ -176,34 +194,35 @@ async def main():
             logger.info("Using configured PROXY_URL for Playwright.")
             
         browser = await p.chromium.launch(**browser_args)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        # Run standard scrapers
-        p_laer = await context.new_page()
-        all_items.extend(await scrapers.scrape_laerepladsen(p_laer))
-        await p_laer.close()
-        
-        p_elev = await context.new_page()
-        all_items.extend(await scrapers.scrape_elevplads(p_elev))
-        await p_elev.close()
-        
-        p_jobnet = await context.new_page()
-        all_items.extend(await scrapers.scrape_jobnet(p_jobnet))
-        await p_jobnet.close()
-        
-        p_jobindex = await context.new_page()
-        all_items.extend(await scrapers.scrape_jobindex(p_jobindex))
-        await p_jobindex.close()
-        
-        p_itjobbank = await context.new_page()
-        all_items.extend(await scrapers.scrape_itjobbank(p_itjobbank))
-        await p_itjobbank.close()
-        
-        # Custom Corporate Scrapers
-        all_items.extend(await company_scrapers.scrape_custom_companies(context))
-
-        await browser.close()
+        try:
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            # Run standard scrapers
+            p_laer = await context.new_page()
+            all_items.extend(await scrapers.scrape_laerepladsen(p_laer))
+            await p_laer.close()
+            
+            p_elev = await context.new_page()
+            all_items.extend(await scrapers.scrape_elevplads(p_elev))
+            await p_elev.close()
+            
+            p_jobnet = await context.new_page()
+            all_items.extend(await scrapers.scrape_jobnet(p_jobnet))
+            await p_jobnet.close()
+            
+            p_jobindex = await context.new_page()
+            all_items.extend(await scrapers.scrape_jobindex(p_jobindex))
+            await p_jobindex.close()
+            
+            p_itjobbank = await context.new_page()
+            all_items.extend(await scrapers.scrape_itjobbank(p_itjobbank))
+            await p_itjobbank.close()
+            
+            # Custom Corporate Scrapers
+            all_items.extend(await company_scrapers.scrape_custom_companies(context))
+        finally:
+            await browser.close()
 
     # Process items (Jobs vs Hashes)
     existing_ids = set(old_jobs.keys())
