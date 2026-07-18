@@ -51,8 +51,7 @@ EXCLUDE_KEYWORDS = [
     "studentermedhjælper",
     "intern",
     "internship",
-    "netværk",
-    "grundfos"
+    "netværk"
 ]
 
 TARGET_ENTERPRISES = ["arla", "eurowind", "thise mejeri"]

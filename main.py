@@ -118,7 +118,7 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict]):
         messages.append(msg)
         
     if not messages:
-        messages.append("*Ingen nye IT Elevpladser eller ændringer\\.*")
+        return
 
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     async with httpx.AsyncClient() as client:
@@ -179,14 +179,26 @@ async def main():
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        page = await context.new_page()
-        
         # Run standard scrapers
-        all_items.extend(await scrapers.scrape_laerepladsen(page))
-        all_items.extend(await scrapers.scrape_elevplads(page))
-        all_items.extend(await scrapers.scrape_jobnet(page))
-        all_items.extend(await scrapers.scrape_jobindex(page))
-        all_items.extend(await scrapers.scrape_itjobbank(page))
+        p_laer = await context.new_page()
+        all_items.extend(await scrapers.scrape_laerepladsen(p_laer))
+        await p_laer.close()
+        
+        p_elev = await context.new_page()
+        all_items.extend(await scrapers.scrape_elevplads(p_elev))
+        await p_elev.close()
+        
+        p_jobnet = await context.new_page()
+        all_items.extend(await scrapers.scrape_jobnet(p_jobnet))
+        await p_jobnet.close()
+        
+        p_jobindex = await context.new_page()
+        all_items.extend(await scrapers.scrape_jobindex(p_jobindex))
+        await p_jobindex.close()
+        
+        p_itjobbank = await context.new_page()
+        all_items.extend(await scrapers.scrape_itjobbank(p_itjobbank))
+        await p_itjobbank.close()
         
         # Custom Corporate Scrapers
         all_items.extend(await company_scrapers.scrape_custom_companies(context))
