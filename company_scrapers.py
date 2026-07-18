@@ -5,7 +5,7 @@ import os
 from patchright.async_api import BrowserContext, Page
 import config
 import hashlib
-from scrapers import format_job
+from scrapers import format_job, is_valid_job
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 logger = logging.getLogger("elevplads_scraper")
@@ -19,7 +19,7 @@ async def extract_links_from_frame(frame, url, found_jobs):
                 href = await link.get_attribute("href")
                 if not href: continue
                 
-                if "datatekniker" in text or "it-supporter" in text or "it-elev" in text or "elevplads" in text:
+                if "datatekniker" in text or "it-elev" in text or "elevplads" in text:
                     if href.startswith("http"):
                         job_url = href
                     else:
@@ -45,10 +45,15 @@ async def _do_scrape_company(page: Page, url: str):
     found_jobs = []
     await extract_links_from_frame(page.main_frame, url, found_jobs)
             
-    # Structural hash (using deterministic MD5 instead of Python's process-randomized hash())
-    # Round length to nearest 100 to avoid noisy changes from minor dynamic content
-    body_text = await page.inner_text("body")
-    rounded_len = len(body_text) // 100 * 100
+    # Structural hash: try to target the content area first, fall back to body
+    content_el = page.locator("main, article, [class*='job'], [class*='career'], [class*='stilling'], [id*='job'], [id*='career']")
+    if await content_el.count() > 0:
+        body_text = await content_el.first.inner_text()
+    else:
+        body_text = await page.inner_text("body")
+    
+    # Round length to nearest 200 to absorb minor dynamic changes
+    rounded_len = len(body_text) // 200 * 200
     a_count = await page.locator("a").count()
     iframe_count = await page.locator("iframe").count()
     structural_hash = hashlib.md5(f"{rounded_len}_{a_count}_{iframe_count}".encode()).hexdigest()
@@ -71,14 +76,17 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
             
             if found_jobs:
                 for fj in found_jobs:
-                    job_id = fj["url"].split("/")[-1] or fj["url"]
-                    jobs.append(format_job(
-                        job_id=job_id,
-                        title=fj["title"],
-                        company=name,
-                        url=fj["url"],
-                        source="UniversalCrawler"
-                    ))
+                    fj_title = fj["title"].replace("Mulig stilling: ", "")
+                    # Validate through the same filter as other scrapers
+                    if is_valid_job(fj_title, "", name, ""):
+                        job_id = hashlib.md5(f"{name}_{fj_title}_{fj['url']}".encode()).hexdigest()
+                        jobs.append(format_job(
+                            job_id=job_id,
+                            title=fj["title"],
+                            company=name,
+                            url=fj["url"],
+                            source="UniversalCrawler"
+                        ))
             elif "datatekniker" in body_text.lower():
                 jobs.append(format_job(
                     job_id=f"custom_{name.replace(' ', '_').lower()}",

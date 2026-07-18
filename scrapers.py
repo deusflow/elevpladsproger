@@ -2,6 +2,7 @@ import re
 import json
 import asyncio
 import os
+import hashlib
 from datetime import datetime, timezone
 from patchright.async_api import Page
 import httpx
@@ -19,7 +20,6 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
         if 7400 <= int(postal_code) <= 8999:
             is_in_region = True
     else:
-        import re
         city_pattern = r'\b(?:' + '|'.join(map(re.escape, config.MIDTJYLLAND_CITIES)) + r')\b'
         if re.search(city_pattern, location_lower) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower:
             is_in_region = True
@@ -28,7 +28,6 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
         return False
             
     # Check exclusions first using regex word boundaries to prevent substring matching
-    import re
     for ex in config.EXCLUDE_KEYWORDS:
         if re.search(r'\b' + re.escape(ex) + r'\b', title_lower):
             return False
@@ -219,7 +218,6 @@ async def scrape_itjobbank(page: Page) -> list[dict]:
                 postal = postal_match.group(1) if postal_match else ""
 
                 if is_valid_job(title, postal, company, location_text):
-                    import hashlib
                     job_id_str = f"{company}_{title}_{job_url}"
                     job_id = hashlib.md5(job_id_str.encode()).hexdigest()
                     jobs.append(format_job(
@@ -337,7 +335,6 @@ async def scrape_jobindex(page: Page) -> list[dict]:
                     postal = postal_match.group(1) if postal_match else ""
                 
                 if is_valid_job(title, postal, company, location_text):
-                    import hashlib
                     job_id_str = f"{company}_{title}_{url}"
                     job_id = hashlib.md5(job_id_str.encode()).hexdigest()
                     jobs.append(format_job(

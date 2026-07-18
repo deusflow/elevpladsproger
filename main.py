@@ -84,7 +84,12 @@ async def save_state(state: dict):
             except Exception as e:
                 logger.error(f"Error saving to Supabase: {e}")
                 
-    # Fallback to local
+        # If Supabase is configured but save failed, do NOT silently fall back
+        # to a local file that will vanish after CI/CD completes
+        logger.critical("State save to Supabase failed. Local fallback skipped to prevent duplicate notifications on next run.")
+        return
+                
+    # Fallback to local only when Supabase is NOT configured
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
     logger.info("Saved state to local file.")
@@ -106,9 +111,10 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict]):
         title = escape_markdown_v2(job['title'])
         company = escape_markdown_v2(job['company'])
         source = escape_markdown_v2(job['source'])
-        url = escape_markdown_v2(job['url'])
+        # URLs must NOT be escaped — Telegram MarkdownV2 requires raw URLs inside [text](url)
+        url = job['url']
         
-        job_str = f"🔹 *{title}*\n🏢 {company} ({source})\n🔗 [Ansøg her]({url})\n\n"
+        job_str = f"🔹 *{title}*\n🏢 {company} \\({source}\\)\n🔗 [Ansøg her]({url})\n\n"
         
         if len(current_msg) + len(job_str) > 4000:
             messages.append(current_msg)
@@ -124,7 +130,8 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict]):
         current_msg += "Strukturen på følgende sider er ændret\\. Der er måske en skjult elevplads:\n\n"
         for comp in changed_companies:
             company = escape_markdown_v2(comp['company'])
-            url = escape_markdown_v2(comp['url'])
+            # URLs must NOT be escaped
+            url = comp['url']
             comp_str = f"🏢 *{company}*\n🔗 [Tjek manuelt]({url})\n\n"
             if len(current_msg) + len(comp_str) > 4000:
                 messages.append(current_msg)
@@ -230,6 +237,12 @@ async def main():
     changed_companies = []
     new_company_hashes = old_company_hashes.copy()
     
+    # Track seen (company, title) pairs to deduplicate across sources
+    seen_titles = set()
+    for jdata in old_jobs.values():
+        key = (jdata.get("company", "").lower().strip(), jdata.get("title", "").lower().strip())
+        seen_titles.add(key)
+    
     for item in all_items:
         if item.get("type") == "hash":
             c_name = item["company"]
@@ -242,10 +255,12 @@ async def main():
                 
             new_company_hashes[c_name] = str(c_hash)
         else:
-            if item["job_id"] not in existing_ids:
+            dedup_key = (item.get("company", "").lower().strip(), item.get("title", "").lower().strip())
+            if item["job_id"] not in existing_ids and dedup_key not in seen_titles:
                 item["discovered_at"] = datetime.now().isoformat()
                 new_jobs.append(item)
                 existing_ids.add(item["job_id"])
+                seen_titles.add(dedup_key)
 
     logger.info(f"Discovered {len(new_jobs)} new jobs. {len(changed_companies)} companies changed structure.")
     
