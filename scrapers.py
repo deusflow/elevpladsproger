@@ -8,6 +8,25 @@ from patchright.async_api import Page
 import httpx
 import config
 from config import logger
+import functools
+
+def with_error_screenshot(scraper_name: str):
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(page: Page, *args, **kwargs):
+            try:
+                return await func(page, *args, **kwargs)
+            except Exception as e:
+                logger.error(f"Error in {scraper_name} scraper: {e}")
+                try:
+                    os.makedirs("screenshots", exist_ok=True)
+                    safe_name = scraper_name.replace(' ', '_').lower()
+                    await page.screenshot(path=f"screenshots/{safe_name}_error.png")
+                except Exception as se:
+                    logger.error(f"Could not take screenshot for {scraper_name}: {se}")
+                return []
+        return wrapper
+    return decorator
 
 def is_valid_job(title: str, postal_code: str, company: str = "", location: str = "") -> bool:
     title_lower = title.lower()
@@ -68,6 +87,7 @@ def format_job(job_id: str, title: str, company: str, url: str, source: str) -> 
         "discovered_at": datetime.now(timezone.utc).isoformat()
     }
 
+@with_error_screenshot("Lærepladsen")
 async def scrape_laerepladsen(page: Page) -> list[dict]:
     jobs = []
     intercepted_data = None
@@ -113,127 +133,106 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
                             url=f"https://laerepladsen.dk/elev/opslag/{item.get('id')}",
                             source="Laerepladsen"
                         ))
-    except Exception as e:
-        logger.error(f"Error in Lærepladsen scraper: {e}")
-        try:
-            os.makedirs("screenshots", exist_ok=True)
-            await page.screenshot(path="screenshots/laerepladsen_error.png")
-        except Exception as se:
-            logger.error(f"Could not take screenshot for Lærepladsen: {se}")
     finally:
         page.remove_listener("response", handle_response)
         
     return jobs
 
+@with_error_screenshot("Jobnet")
 async def scrape_jobnet(page: Page) -> list[dict]:
 
     jobs = []
-    try:
-        logger.info("Scraping Jobnet...")
-        await page.goto("https://jobnet.dk/find-job", wait_until="networkidle", timeout=30000)
-        
-        # Call BFF Search endpoint
-        js_code = """
-        async () => {
-            const url = 'https://jobnet.dk/bff/FindJob/Search?resultsPerPage=100&pageNumber=1&orderType=BestMatch&searchString=datatekniker';
-            const response = await fetch(url, {
-                headers: {
-                    'x-csrf': '1',
-                    'accept': 'application/json'
-                }
-            });
-            if (!response.ok) {
-                throw new Error('HTTP error ' + response.status);
+    logger.info("Scraping Jobnet...")
+    await page.goto("https://jobnet.dk/find-job", wait_until="networkidle", timeout=30000)
+    
+    # Call BFF Search endpoint
+    js_code = """
+    async () => {
+        const url = 'https://jobnet.dk/bff/FindJob/Search?resultsPerPage=100&pageNumber=1&orderType=BestMatch&searchString=datatekniker';
+        const response = await fetch(url, {
+            headers: {
+                'x-csrf': '1',
+                'accept': 'application/json'
             }
-            return await response.json();
+        });
+        if (!response.ok) {
+            throw new Error('HTTP error ' + response.status);
         }
-        """
-        data = await page.evaluate(js_code)
-        postings = data.get("jobAds", [])
-        logger.info(f"Jobnet BFF API returned {len(postings)} postings")
+        return await response.json();
+    }
+    """
+    data = await page.evaluate(js_code)
+    postings = data.get("jobAds", [])
+    logger.info(f"Jobnet BFF API returned {len(postings)} postings")
+    
+    for item in postings:
+        title = item.get("title", "") or item.get("occupation", "")
+        company = item.get("hiringOrgName", "Ukendt")
+        postal = str(item.get("postalCode", ""))
+        job_id = str(item.get("jobAdId", ""))
         
-        for item in postings:
-            title = item.get("title", "") or item.get("occupation", "")
-            company = item.get("hiringOrgName", "Ukendt")
-            postal = str(item.get("postalCode", ""))
-            job_id = str(item.get("jobAdId", ""))
-            
-            # Use external URL if available, otherwise construct standard Jobnet details URL
-            external_url = item.get("jobAdUrl", "")
-            url = external_url if (external_url and external_url.startswith("http")) else f"https://jobnet.dk/find-job/details/{job_id}"
+        # Use external URL if available, otherwise construct standard Jobnet details URL
+        external_url = item.get("jobAdUrl", "")
+        url = external_url if (external_url and external_url.startswith("http")) else f"https://jobnet.dk/find-job/details/{job_id}"
 
-            if is_valid_job(title, postal, company):
-                jobs.append(format_job(
-                    job_id=job_id,
-                    title=title,
-                    company=company,
-                    url=url,
-                    source="Jobnet"
-                ))
-    except Exception as e:
-        logger.error(f"Error in Jobnet scraper: {e}")
-        try:
-            os.makedirs("screenshots", exist_ok=True)
-            await page.screenshot(path="screenshots/jobnet_error.png")
-        except Exception as se:
-            logger.error(f"Could not take screenshot for Jobnet: {se}")
+        if is_valid_job(title, postal, company):
+            jobs.append(format_job(
+                job_id=job_id,
+                title=title,
+                company=company,
+                url=url,
+                source="Jobnet"
+            ))
     return jobs
 
+@with_error_screenshot("IT-Jobbank")
 async def scrape_itjobbank(page: Page) -> list[dict]:
 
     jobs = []
     queries = ["datatekniker", "it-elev"]
-    try:
-        logger.info("Scraping IT-Jobbank...")
-        for q in queries:
-            url = f"https://www.it-jobbank.dk/job/midtjylland?q={q}"
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+    logger.info("Scraping IT-Jobbank...")
+    for q in queries:
+        url = f"https://www.it-jobbank.dk/job/midtjylland?q={q}"
+        await page.goto(url, wait_until="networkidle", timeout=30000)
 
-            try:
-                await page.wait_for_selector(".job-search-result, .job-item, .result-item", timeout=5000)
-            except Exception:
-                logger.info(f"No job results found on IT-Jobbank for query '{q}'.")
-                continue
-
-            listings = await page.locator(".job-item, .result-item").all()
-            logger.info(f"IT-Jobbank found {len(listings)} raw listings for query '{q}'")
-            for listing in listings:
-                title_el = listing.locator("h3 a, h2 a, .job-title a").first
-                if not await title_el.count():
-                    continue
-                title = (await title_el.inner_text()).strip()
-                href = await title_el.get_attribute("href") or ""
-                job_url = href if href.startswith("http") else f"https://www.it-jobbank.dk{href}"
-                
-                if "?" in job_url and not "job=" in job_url:
-                    job_url = job_url.split("?")[0]
-
-                company_el = listing.locator(".company-name, .employer, .job-company").first
-                company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
-
-                location_el = listing.locator(".job-location, .location").first
-                location_text = (await location_el.inner_text()).strip() if await location_el.count() else ""
-                
-                postal_match = re.search(r'\b(\d{4})\b', location_text)
-                postal = postal_match.group(1) if postal_match else ""
-
-                if is_valid_job(title, postal, company, location_text):
-                    job_id_str = f"{company}_{title}_{job_url}"
-                    job_id = hashlib.md5(job_id_str.encode()).hexdigest()
-                    jobs.append(format_job(
-                        job_id=job_id,
-                        title=title,
-                        company=company,
-                        url=job_url,
-                        source="ITJobbank"
-                    ))
-    except Exception as e:
-        logger.error(f"Error in IT-Jobbank scraper: {e}")
         try:
-            os.makedirs("screenshots", exist_ok=True)
-            await page.screenshot(path="screenshots/itjobbank_error.png")
-        except Exception as se:
-            logger.error(f"Could not take screenshot for IT-Jobbank: {se}")
+            await page.wait_for_selector(".job-search-result, .job-item, .result-item", timeout=5000)
+        except Exception:
+            logger.info(f"No job results found on IT-Jobbank for query '{q}'.")
+            continue
+
+        listings = await page.locator(".job-item, .result-item").all()
+        logger.info(f"IT-Jobbank found {len(listings)} raw listings for query '{q}'")
+        for listing in listings:
+            title_el = listing.locator("h3 a, h2 a, .job-title a").first
+            if not await title_el.count():
+                continue
+            title = (await title_el.inner_text()).strip()
+            href = await title_el.get_attribute("href") or ""
+            job_url = href if href.startswith("http") else f"https://www.it-jobbank.dk{href}"
+            
+            if "?" in job_url and not "job=" in job_url:
+                job_url = job_url.split("?")[0]
+
+            company_el = listing.locator(".company-name, .employer, .job-company").first
+            company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
+
+            location_el = listing.locator(".job-location, .location").first
+            location_text = (await location_el.inner_text()).strip() if await location_el.count() else ""
+            
+            postal_match = re.search(r'\b(\d{4})\b', location_text)
+            postal = postal_match.group(1) if postal_match else ""
+
+            if is_valid_job(title, postal, company, location_text):
+                job_id_str = f"{company}_{title}_{job_url}"
+                job_id = hashlib.md5(job_id_str.encode()).hexdigest()
+                jobs.append(format_job(
+                    job_id=job_id,
+                    title=title,
+                    company=company,
+                    url=job_url,
+                    source="ITJobbank"
+                ))
     return jobs
 
 async def scrape_thehub() -> list[dict]:
@@ -295,62 +294,55 @@ async def scrape_thehub() -> list[dict]:
         logger.error(f"Error in TheHub scraper: {e}")
     return jobs
 
+@with_error_screenshot("Jobindex")
 async def scrape_jobindex(page: Page) -> list[dict]:
     jobs = []
     queries = ["datatekniker", "it-elev"]
-    try:
-        logger.info("Scraping Jobindex...")
-        for q in queries:
-            await page.goto(f"https://www.jobindex.dk/jobsoegning/it/midtjylland?q={q}", timeout=30000)
-            try:
-                await page.wait_for_selector(".jobsearch-result", timeout=10000)
-            except Exception:
-                logger.warning(f"No jobsearch-result found on Jobindex for query '{q}'.")
+    logger.info("Scraping Jobindex...")
+    for q in queries:
+        await page.goto(f"https://www.jobindex.dk/jobsoegning/it/midtjylland?q={q}", timeout=30000)
+        try:
+            await page.wait_for_selector(".jobsearch-result", timeout=10000)
+        except Exception:
+            logger.warning(f"No jobsearch-result found on Jobindex for query '{q}'.")
+            continue
+            
+        listings = await page.locator(".jobsearch-result").all()
+        for listing in listings:
+            title_el = listing.locator("h4 a").first
+            if not await title_el.count():
                 continue
                 
-            listings = await page.locator(".jobsearch-result").all()
-            for listing in listings:
-                title_el = listing.locator("h4 a").first
-                if not await title_el.count():
-                    continue
-                    
-                title = await title_el.inner_text()
-                url = await title_el.get_attribute("href")
+            title = await title_el.inner_text()
+            url = await title_el.get_attribute("href")
+            
+            if url and "?" in url:
+                url = url.split("?")[0]
+            
+            company = "Ukendt"
+            company_el = listing.locator(".jix_robotjob--company strong, .company-name").first
+            if await company_el.count():
+                company = await company_el.inner_text()
                 
-                if url and "?" in url:
-                    url = url.split("?")[0]
-                
-                company = "Ukendt"
-                company_el = listing.locator(".jix_robotjob--company strong, .company-name").first
-                if await company_el.count():
-                    company = await company_el.inner_text()
-                    
-                # Safely check for area element count to avoid 30s timeout
-                area_el = listing.locator(".jix_robotjob--area, .area").first
-                postal = ""
-                location_text = ""
-                if await area_el.count() > 0:
-                    location_text = await area_el.inner_text()
-                    postal_match = re.search(r'\b(\d{4})\b', location_text)
-                    postal = postal_match.group(1) if postal_match else ""
-                
-                if is_valid_job(title, postal, company, location_text):
-                    job_id_str = f"{company}_{title}_{url}"
-                    job_id = hashlib.md5(job_id_str.encode()).hexdigest()
-                    jobs.append(format_job(
-                        job_id=job_id,
-                        title=title,
-                        company=company,
-                        url=url,
-                        source="Jobindex"
-                    ))
-    except Exception as e:
-        logger.error(f"Error in Jobindex scraper: {e}")
-        try:
-            os.makedirs("screenshots", exist_ok=True)
-            await page.screenshot(path="screenshots/jobindex_error.png")
-        except Exception as se:
-            logger.error(f"Could not take screenshot for Jobindex: {se}")
+            # Safely check for area element count to avoid 30s timeout
+            area_el = listing.locator(".jix_robotjob--area, .area").first
+            postal = ""
+            location_text = ""
+            if await area_el.count() > 0:
+                location_text = await area_el.inner_text()
+                postal_match = re.search(r'\b(\d{4})\b', location_text)
+                postal = postal_match.group(1) if postal_match else ""
+            
+            if is_valid_job(title, postal, company, location_text):
+                job_id_str = f"{company}_{title}_{url}"
+                job_id = hashlib.md5(job_id_str.encode()).hexdigest()
+                jobs.append(format_job(
+                    job_id=job_id,
+                    title=title,
+                    company=company,
+                    url=url,
+                    source="Jobindex"
+                ))
     return jobs
 
 async def scrape_elevplads(page: Page) -> list[dict]:

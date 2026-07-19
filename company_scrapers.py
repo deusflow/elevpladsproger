@@ -52,11 +52,10 @@ async def _do_scrape_company(page: Page, url: str):
     else:
         body_text = await page.inner_text("body")
     
-    # Round length to nearest 200 to absorb minor dynamic changes
-    rounded_len = len(body_text) // 200 * 200
-    a_count = await page.locator("a").count()
-    iframe_count = await page.locator("iframe").count()
-    structural_hash = hashlib.md5(f"{rounded_len}_{a_count}_{iframe_count}".encode()).hexdigest()
+    import re
+    clean_text = re.sub(r'\s+', '', body_text)
+    rounded_len = len(clean_text) // 200 * 200
+    structural_hash = hashlib.md5(f"{rounded_len}".encode()).hexdigest()
     
     return found_jobs, body_text, structural_hash
 

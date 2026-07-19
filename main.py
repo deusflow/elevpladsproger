@@ -58,26 +58,18 @@ async def load_state() -> dict:
 async def save_state(state: dict):
     # Try Supabase first
     if SUPABASE_URL and SUPABASE_KEY:
-        url_check = f"{SUPABASE_URL}/rest/v1/state?key=eq.scraper_state&select=key"
+        url = f"{SUPABASE_URL}/rest/v1/state"
         headers = {
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates"
         }
         async with httpx.AsyncClient() as client:
             try:
-                check_resp = await client.get(url_check, headers=headers, timeout=10.0)
-                row_exists = check_resp.status_code == 200 and len(check_resp.json()) > 0
-                
-                if row_exists:
-                    url_patch = f"{SUPABASE_URL}/rest/v1/state?key=eq.scraper_state"
-                    resp = await client.patch(url_patch, headers=headers, json={"value": state}, timeout=10.0)
-                else:
-                    url_post = f"{SUPABASE_URL}/rest/v1/state"
-                    resp = await client.post(url_post, headers=headers, json={"key": "scraper_state", "value": state}, timeout=10.0)
-                    
+                resp = await client.post(url, headers=headers, json={"key": "scraper_state", "value": state}, timeout=10.0)
                 if resp.status_code in [200, 201, 204]:
-                    logger.info("Saved state to Supabase.")
+                    logger.info("Saved state to Supabase via UPSERT.")
                     return
                 else:
                     logger.error(f"Failed to save state to Supabase (status {resp.status_code}): {resp.text}")
@@ -205,29 +197,30 @@ async def main():
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             )
-            # Run standard scrapers
-            p_laer = await context.new_page()
-            all_items.extend(await scrapers.scrape_laerepladsen(p_laer))
-            await p_laer.close()
+            # Helper to run standard scrapers
+            async def run_scraper(scraper_func, context):
+                page = await context.new_page()
+                try:
+                    return await scraper_func(page)
+                finally:
+                    await page.close()
+
+            # Run all scrapers in parallel
+            tasks = [
+                run_scraper(scrapers.scrape_laerepladsen, context),
+                run_scraper(scrapers.scrape_elevplads, context),
+                run_scraper(scrapers.scrape_jobnet, context),
+                run_scraper(scrapers.scrape_jobindex, context),
+                run_scraper(scrapers.scrape_itjobbank, context),
+                company_scrapers.scrape_custom_companies(context)
+            ]
             
-            p_elev = await context.new_page()
-            all_items.extend(await scrapers.scrape_elevplads(p_elev))
-            await p_elev.close()
-            
-            p_jobnet = await context.new_page()
-            all_items.extend(await scrapers.scrape_jobnet(p_jobnet))
-            await p_jobnet.close()
-            
-            p_jobindex = await context.new_page()
-            all_items.extend(await scrapers.scrape_jobindex(p_jobindex))
-            await p_jobindex.close()
-            
-            p_itjobbank = await context.new_page()
-            all_items.extend(await scrapers.scrape_itjobbank(p_itjobbank))
-            await p_itjobbank.close()
-            
-            # Custom Corporate Scrapers
-            all_items.extend(await company_scrapers.scrape_custom_companies(context))
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for res in results:
+                if isinstance(res, Exception):
+                    logger.error(f"Scraper failed with exception: {res}")
+                elif isinstance(res, list):
+                    all_items.extend(res)
         finally:
             await browser.close()
 
