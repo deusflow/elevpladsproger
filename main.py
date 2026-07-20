@@ -4,6 +4,8 @@ import os
 import httpx
 from datetime import datetime, timezone
 from patchright.async_api import async_playwright
+import random
+from playwright_stealth import stealth_async
 
 import scrapers
 import company_scrapers
@@ -244,13 +246,24 @@ async def main():
             logger.info("Using configured PROXY_URL for Playwright.")
             
         browser = await p.chromium.launch(**browser_args)
+        USER_AGENTS = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0"
+        ]
         try:
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                user_agent=random.choice(USER_AGENTS),
+                locale="da-DK",
+                timezone_id="Europe/Copenhagen",
+                viewport={'width': 1920, 'height': 1080}
             )
             # Helper to run standard scrapers
             async def run_scraper(scraper_func, context):
                 page = await context.new_page()
+                await stealth_async(page)
                 try:
                     return await scraper_func(page)
                 finally:

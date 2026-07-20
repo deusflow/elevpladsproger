@@ -9,6 +9,7 @@ from patchright.async_api import BrowserContext, Page
 import config
 from scrapers import format_job, is_valid_job
 from tenacity import retry, stop_after_attempt, wait_fixed
+from playwright_stealth import stealth_async
 
 logger = logging.getLogger("elevplads_scraper")
 
@@ -154,6 +155,7 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
     async with sem:
         logger.info(f"Crawling {name}: {url}")
         page = await context.new_page()
+        await stealth_async(page)
         jobs = []
         try:
             found_jobs, body_text, structural_hash = await _do_scrape_company(page, url)
