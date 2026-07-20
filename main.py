@@ -146,7 +146,13 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict]):
         # URLs must NOT be escaped — Telegram MarkdownV2 requires raw URLs inside [text](url)
         url = job['url']
         
-        job_str = f"🔹 *{title}*\n🏢 {company} \\({source}\\)\n🔗 [Ansøg her]({url})\n\n"
+        match_score = job.get('match_score')
+        if match_score is not None:
+            city = escape_markdown_v2(job.get('match_city', 'Ukendt'))
+            reason = escape_markdown_v2(job.get('match_reason', ''))
+            job_str = f"🎯 *{match_score}% Match* \\| {city}\n🔹 *{title}*\n🏢 {company} \\({source}\\)\n💡 _{reason}_\n🔗 [Ansøg her]({url})\n\n"
+        else:
+            job_str = f"🔹 *{title}*\n🏢 {company} \\({source}\\)\n🔗 [Ansøg her]({url})\n\n"
         
         if len(current_msg) + len(job_str) > 4000:
             messages.append(current_msg)
@@ -300,6 +306,10 @@ async def main():
 
     logger.info(f"Discovered {len(new_jobs)} new jobs. {len(changed_companies)} companies changed structure.")
     
+    if new_jobs:
+        import ai_scorer
+        await ai_scorer.enrich_jobs_with_ai(new_jobs)
+        
     await notify_telegram(new_jobs, changed_companies)
     
     state_updated = False
