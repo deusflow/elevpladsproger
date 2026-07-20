@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from patchright.async_api import async_playwright
 import random
 from playwright_stealth import stealth_async
+import accreditation_checker
+import proff_scraper
 
 import scrapers
 import company_scrapers
@@ -155,13 +157,17 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
         # URLs must NOT be escaped — Telegram MarkdownV2 requires raw URLs inside [text](url)
         url = job['url']
         
+        # Check accreditation
+        is_approved = await accreditation_checker.check_accreditation(job['company'])
+        accreditation_badge = "✅ Godkendt lærested: Datatekniker" if is_approved else "⚠️ Status ukendt / Kræver godkendelse"
+        
         match_score = job.get('match_score')
         if match_score is not None:
             city = escape_markdown_v2(job.get('match_city', 'Ukendt'))
             reason = escape_markdown_v2(job.get('match_reason', ''))
-            job_str = f"🎯 *{match_score}% Match* \\| {city}\n🔹 *{title}*\n🏢 {company} \\({source}\\)\n💡 _{reason}_\n🔗 [Ansøg her]({url})\n\n"
+            job_str = f"🎯 *{match_score}% Match* \\| {city}\n🔹 *{title}*\n🏢 {company} \\({source}\\)\n🎓 _{accreditation_badge}_\n💡 _{reason}_\n🔗 [Ansøg her]({url})\n\n"
         else:
-            job_str = f"🔹 *{title}*\n🏢 {company} \\({source}\\)\n🔗 [Ansøg her]({url})\n\n"
+            job_str = f"🔹 *{title}*\n🏢 {company} \\({source}\\)\n🎓 _{accreditation_badge}_\n🔗 [Ansøg her]({url})\n\n"
         
         if len(current_msg) + len(job_str) > 4000:
             messages.append(current_msg)
@@ -269,6 +275,24 @@ async def main():
                 finally:
                     await page.close()
 
+            # Dynamic discovery on Proff (run once a week, or on empty state)
+            last_proff_scrape = state.get("last_proff_scrape")
+            now_dt = datetime.now(timezone.utc)
+            if not last_proff_scrape or (now_dt - datetime.fromisoformat(last_proff_scrape)).days >= 7:
+                logger.info("Running weekly dynamic company discovery via Proff.dk...")
+                dynamic_companies = await proff_scraper.discover_it_companies(context)
+                if dynamic_companies:
+                    existing_dynamic = state.get("dynamic_companies", [])
+                    existing_names = {c["name"].lower() for c in existing_dynamic}
+                    for dc in dynamic_companies:
+                        if dc["name"].lower() not in existing_names:
+                            existing_dynamic.append(dc)
+                    state["dynamic_companies"] = existing_dynamic
+                    state["last_proff_scrape"] = now_dt.isoformat()
+                    await save_state(state)
+            
+            dynamic_companies = state.get("dynamic_companies", [])
+
             # Run all scrapers in parallel
             tasks = [
                 run_scraper(scrapers.scrape_laerepladsen, context),
@@ -276,7 +300,7 @@ async def main():
                 run_scraper(scrapers.scrape_jobnet, context),
                 run_scraper(scrapers.scrape_jobindex, context),
                 run_scraper(scrapers.scrape_itjobbank, context),
-                company_scrapers.scrape_custom_companies(context)
+                company_scrapers.scrape_custom_companies(context, dynamic_companies)
             ]
             
             results = await asyncio.gather(*tasks, return_exceptions=True)
