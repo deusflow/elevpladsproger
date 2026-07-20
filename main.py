@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import httpx
-from datetime import datetime
+from datetime import datetime, timezone
 from patchright.async_api import async_playwright
 
 import scrapers
@@ -66,9 +66,8 @@ async def load_state() -> dict:
                 logger.warning("Supabase load failed completely. Recovering state from local fallback file.")
                 return fallback_state
 
-            logger.error("Supabase load failed and no fallback file found. Aborting to prevent data corruption.")
-            import sys
-            sys.exit(1)
+            logger.error("Supabase load failed and no fallback file found. Returning empty state.")
+            return state
                 
     # Fallback to local DB_FILE only if Supabase is not configured
     elif os.path.exists(DB_FILE):
@@ -205,7 +204,7 @@ async def main():
     
     old_jobs = {item["job_id"]: item for item in old_jobs_list}
     
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     retained_jobs = {}
     for jid, jdata in old_jobs.items():
         try:
@@ -285,13 +284,16 @@ async def main():
             # If hash changed (and we had a valid MD5 old hash to compare to)
             # Avoid false alerts if old_hash was a process-randomized integer hash
             if old_hash and str(old_hash) != str(c_hash) and not str(old_hash).lstrip('-').isdigit():
-                changed_companies.append(item)
+                if not item.get("llm_verified", False):
+                    changed_companies.append(item)
+                else:
+                    logger.info(f"Structure changed for {c_name}, but LLM verified 0 jobs. Updating hash silently.")
                 
             new_company_hashes[c_name] = str(c_hash)
         else:
             dedup_key = (item.get("company", "").lower().strip(), item.get("title", "").lower().strip())
             if item["job_id"] not in existing_ids and dedup_key not in seen_titles:
-                item["discovered_at"] = datetime.now().isoformat()
+                item["discovered_at"] = datetime.now(timezone.utc).isoformat()
                 new_jobs.append(item)
                 existing_ids.add(item["job_id"])
                 seen_titles.add(dedup_key)

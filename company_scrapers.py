@@ -41,9 +41,9 @@ async def extract_links_from_frame(frame, base_url, found_jobs):
     for child in frame.child_frames:
         await extract_links_from_frame(child, base_url, found_jobs)
 
-async def extract_jobs_with_groq(company_name: str, page_url: str, page_text: str) -> list[dict]:
+async def extract_jobs_with_groq(company_name: str, page_url: str, page_text: str) -> tuple[list[dict], bool]:
     if not config.GROQ_API_KEY:
-        return []
+        return [], False
         
     truncated_text = page_text[:8000]
     
@@ -104,13 +104,13 @@ Page Text:
                         })
                 if extracted:
                     logger.info(f"Groq LLM extracted {len(extracted)} IT elev jobs for {company_name}")
-                return extracted
+                return extracted, True
             else:
                 logger.warning(f"Groq API error {resp.status_code}: {resp.text}")
     except Exception as e:
         logger.error(f"Error invoking Groq LLM for {company_name}: {e}")
         
-    return []
+    return [], False
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
 async def _do_scrape_company(page: Page, url: str):
@@ -157,7 +157,7 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
             found_jobs, body_text, structural_hash = await _do_scrape_company(page, url)
             
             # If LLM API key is present, try LLM extraction as high-precision fallback
-            llm_jobs = await extract_jobs_with_groq(name, url, body_text)
+            llm_jobs, llm_success = await extract_jobs_with_groq(name, url, body_text)
             if llm_jobs:
                 for lj in llm_jobs:
                     job_id = hashlib.md5(f"{name}_{lj['title']}_{lj['url']}".encode()).hexdigest()
@@ -168,7 +168,7 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
                         url=lj["url"],
                         source="UniversalCrawler+LLM"
                     ))
-            elif found_jobs:
+            elif found_jobs and not llm_success:
                 for fj in found_jobs:
                     fj_title = fj["title"].replace("Mulig stilling: ", "")
                     # Validate through the same filter as other scrapers
@@ -181,7 +181,7 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
                             url=fj["url"],
                             source="UniversalCrawler"
                         ))
-            elif "datatekniker" in body_text.lower():
+            elif "datatekniker" in body_text.lower() and not llm_success:
                 jobs.append(format_job(
                     job_id=f"custom_{name.replace(' ', '_').lower()}",
                     title="Mulig IT-stilling fundet i teksten på siden!",
@@ -195,7 +195,8 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
                     "type": "hash",
                     "company": name,
                     "url": url,
-                    "hash": str(structural_hash)
+                    "hash": str(structural_hash),
+                    "llm_verified": llm_success
                 })
         except Exception as e:
             logger.error(f"Failed to crawl {name} ({url}): {e}")

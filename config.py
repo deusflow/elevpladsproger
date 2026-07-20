@@ -56,3 +56,11 @@ EXCLUDE_KEYWORDS = [
 ]
 
 TARGET_ENTERPRISES = ["arla", "eurowind", "thise mejeri"]
+
+JOB_QUERIES = ["datatekniker", "it-elev", "softwareudvikler", "udvikler-elev", "programmering"]
+
+# Precompiled Regex Patterns for High Performance
+import re
+CITY_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, MIDTJYLLAND_CITIES)) + r')\b')
+EXCLUSION_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, EXCLUDE_KEYWORDS)) + r')\b')
+TARGET_KEYWORD_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, TARGET_KEYWORDS)) + r')\b')

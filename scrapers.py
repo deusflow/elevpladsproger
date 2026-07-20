@@ -39,27 +39,21 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
         if 7400 <= int(postal_code) <= 8999:
             is_in_region = True
     else:
-        city_pattern = r'\b(?:' + '|'.join(map(re.escape, config.MIDTJYLLAND_CITIES)) + r')\b'
-        if re.search(city_pattern, location_lower) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower:
+        if config.CITY_PATTERN.search(location_lower) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower:
             is_in_region = True
             
     if not is_in_region:
         return False
             
     # Check exclusions first using regex word boundaries to prevent substring matching
-    for ex in config.EXCLUDE_KEYWORDS:
-        if re.search(r'\b' + re.escape(ex) + r'\b', title_lower):
-            return False
+    if config.EXCLUSION_PATTERN.search(title_lower):
+        return False
             
     # Target enterprises logic
     is_target_enterprise = any(ent in company_lower for ent in config.TARGET_ENTERPRISES)
 
     # Check for target keywords using word boundaries to avoid false positives
-    has_target_skill = False
-    for inc in config.TARGET_KEYWORDS:
-        if re.search(r'\b' + re.escape(inc) + r'\b', title_lower):
-            has_target_skill = True
-            break
+    has_target_skill = bool(config.TARGET_KEYWORD_PATTERN.search(title_lower))
             
     is_elev = "datatekniker" in title_lower or any(e in title_lower for e in config.ELEV_KEYWORDS)
     is_it_role = "datatekniker" in title_lower or "it" in title_lower.split() or "it-" in title_lower or "data" in title_lower
@@ -189,16 +183,20 @@ async def scrape_jobnet(page: Page) -> list[dict]:
 async def scrape_itjobbank(page: Page) -> list[dict]:
 
     jobs = []
-    queries = ["datatekniker", "it-elev"]
     logger.info("Scraping IT-Jobbank...")
-    for q in queries:
+    for q in config.JOB_QUERIES:
         url = f"https://www.it-jobbank.dk/job/midtjylland?q={q}"
         await page.goto(url, wait_until="networkidle", timeout=30000)
 
         try:
             await page.wait_for_selector(".job-search-result, .job-item, .result-item", timeout=5000)
         except Exception:
-            logger.info(f"No job results found on IT-Jobbank for query '{q}'.")
+            logger.info(f"No job results found on IT-Jobbank for query '{q}'. Taking screenshot.")
+            try:
+                os.makedirs("screenshots", exist_ok=True)
+                await page.screenshot(path=f"screenshots/empty_itjobbank_{q}.png")
+            except Exception:
+                pass
             continue
 
         listings = await page.locator(".job-item, .result-item").all()
@@ -246,10 +244,14 @@ async def scrape_thehub() -> list[dict]:
             "Accept": "application/json"
         }
         
-        # Search for both 'elev' and 'datatekniker'
-        for term in ["elev", "datatekniker"]:
-            params = {"countryCode": "DK", "search": term}
-            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        client_kwargs = {"timeout": 20.0, "follow_redirects": True}
+        if config.PROXY_URL:
+            client_kwargs["proxy"] = config.PROXY_URL
+            
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            # Search for both 'elev' and 'datatekniker'
+            for term in ["elev", "datatekniker"]:
+                params = {"countryCode": "DK", "search": term}
                 resp = await client.get(api_url, params=params, headers=headers)
                 if resp.status_code != 200:
                     continue
@@ -297,14 +299,18 @@ async def scrape_thehub() -> list[dict]:
 @with_error_screenshot("Jobindex")
 async def scrape_jobindex(page: Page) -> list[dict]:
     jobs = []
-    queries = ["datatekniker", "it-elev"]
     logger.info("Scraping Jobindex...")
-    for q in queries:
+    for q in config.JOB_QUERIES:
         await page.goto(f"https://www.jobindex.dk/jobsoegning/it/midtjylland?q={q}", timeout=30000)
         try:
             await page.wait_for_selector(".jobsearch-result", timeout=10000)
         except Exception:
             logger.warning(f"No jobsearch-result found on Jobindex for query '{q}'.")
+            try:
+                os.makedirs("screenshots", exist_ok=True)
+                await page.screenshot(path=f"screenshots/empty_jobindex_{q}.png")
+            except Exception:
+                pass
             continue
             
         listings = await page.locator(".jobsearch-result").all()
@@ -348,14 +354,17 @@ async def scrape_jobindex(page: Page) -> list[dict]:
 async def scrape_elevplads(page: Page) -> list[dict]:
 
     jobs = []
-    queries = ["datatekniker", "it-elev", "softwareudvikler", "udvikler-elev", "programmering"]
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-        for q in queries:
+    client_kwargs = {"timeout": 20.0, "follow_redirects": True}
+    if config.PROXY_URL:
+        client_kwargs["proxy"] = config.PROXY_URL
+        
+    async with httpx.AsyncClient(**client_kwargs) as client:
+        for q in config.JOB_QUERIES:
             try:
                 logger.info(f"Scraping Elevplads.dk for '{q}'...")
                 api_url = "https://elevplads.dk/api/posts/get-vacancies"
