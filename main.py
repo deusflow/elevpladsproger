@@ -313,7 +313,7 @@ async def main():
             await browser.close()
 
     # Process items (Jobs vs Hashes)
-    existing_ids = {jid for jid, j in old_jobs.items() if j.get("status") != "expired"}
+    existing_ids = {jid for jid, j in old_jobs.items()}
     new_jobs = []
     changed_companies = []
     new_company_hashes = old_company_hashes.copy()
@@ -321,9 +321,8 @@ async def main():
     # Track seen (company, title) pairs to deduplicate across sources
     seen_titles = set()
     for jdata in old_jobs.values():
-        if jdata.get("status") != "expired":
-            key = (jdata.get("company", "").lower().strip(), jdata.get("title", "").lower().strip())
-            seen_titles.add(key)
+        key = (jdata.get("company", "").lower().strip(), jdata.get("title", "").lower().strip())
+        seen_titles.add(key)
     
     for item in all_items:
         if item.get("type") == "hash":

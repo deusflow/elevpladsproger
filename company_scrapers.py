@@ -175,8 +175,8 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
             elif found_jobs and not llm_success:
                 for fj in found_jobs:
                     fj_title = fj["title"].replace("Mulig stilling: ", "")
-                    # Validate through the same filter as other scrapers
-                    if is_valid_job(fj_title, "", name, ""):
+                    # Validate through the same filter as other scrapers, bypassing geo check
+                    if is_valid_job(fj_title, "", name, "", bypass_geo=True):
                         job_id = hashlib.md5(f"{name}_{fj_title}_{fj['url']}".encode()).hexdigest()
                         jobs.append(format_job(
                             job_id=job_id,

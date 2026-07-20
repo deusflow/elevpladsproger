@@ -43,8 +43,6 @@ ELEV_KEYWORDS = ["elev", "lærling", "apprenticeship"]
 
 EXCLUDE_KEYWORDS = [
     "supporter",
-    "infrastruktur",
-    "support",
     "drift",
     "helpdesk",
     "studiejob",
@@ -57,7 +55,10 @@ EXCLUDE_KEYWORDS = [
 
 TARGET_ENTERPRISES = ["arla", "eurowind", "thise mejeri"]
 
-JOB_QUERIES = ["datatekniker", "it-elev", "softwareudvikler", "udvikler-elev", "programmering"]
+JOB_QUERIES = [
+    "datatekniker", "it-elev", "softwareudvikler", "udvikler-elev", "programmering",
+    "voksenelev", "voksenlærling", "it-lærling", "eux"
+]
 
 # Precompiled Regex Patterns for High Performance
 import re

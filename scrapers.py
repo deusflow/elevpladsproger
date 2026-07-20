@@ -28,25 +28,31 @@ def with_error_screenshot(scraper_name: str):
         return wrapper
     return decorator
 
-def is_valid_job(title: str, postal_code: str, company: str = "", location: str = "") -> bool:
+def is_valid_job(title: str, postal_code: str, company: str = "", location: str = "", bypass_geo: bool = False) -> bool:
     title_lower = title.lower()
     company_lower = company.lower()
     location_lower = location.lower()
     
     # Geolocation filtering
-    is_in_region = False
-    if postal_code and postal_code.isdigit():
-        if 7400 <= int(postal_code) <= 8999:
-            is_in_region = True
-    else:
-        if config.CITY_PATTERN.search(location_lower) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower:
-            is_in_region = True
-            
+    is_in_region = bypass_geo
+    if not is_in_region:
+        if postal_code and postal_code.isdigit():
+            if 7400 <= int(postal_code) <= 8999:
+                is_in_region = True
+        else:
+            if config.CITY_PATTERN.search(location_lower) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower:
+                is_in_region = True
+                
     if not is_in_region:
         return False
             
-    # Check exclusions first using regex word boundaries to prevent substring matching
+    # Check hard exclusions first
     if config.EXCLUSION_PATTERN.search(title_lower):
+        return False
+        
+    # Smart exclude: if title contains infrastruktur/support, it MUST also contain programming keywords
+    has_target_skill = bool(config.TARGET_KEYWORD_PATTERN.search(title_lower))
+    if ("infrastruktur" in title_lower or "support" in title_lower) and not has_target_skill:
         return False
             
     # Target enterprises logic
@@ -101,7 +107,8 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
         page.on("response", handle_response)
         
         # Load the direct search page which automatically triggers the API GET request
-        url = "https://sr.laerepladsen.dk/soeg-opslag/0/Data-%20og%20kommunikationsuddannelsen/3607/Datatekniker/8871/midtjylland"
+        # Widened to include the entire Data- og kommunikationsuddannelsen category (3607)
+        url = "https://sr.laerepladsen.dk/soeg-opslag/0/Data-%20og%20kommunikationsuddannelsen/3607/midtjylland"
         await page.goto(url, wait_until="networkidle", timeout=30000)
             
         # Wait up to 8 seconds for interception to complete
@@ -185,52 +192,57 @@ async def scrape_itjobbank(page: Page) -> list[dict]:
     jobs = []
     logger.info("Scraping IT-Jobbank...")
     for q in config.JOB_QUERIES:
-        url = f"https://www.it-jobbank.dk/job/midtjylland?q={q}"
-        await page.goto(url, wait_until="networkidle", timeout=30000)
+        for page_num in range(1, 4):  # Check up to 3 pages
+            url = f"https://www.it-jobbank.dk/job/midtjylland?q={q}&page={page_num}"
+            await page.goto(url, wait_until="networkidle", timeout=30000)
 
-        try:
-            await page.wait_for_selector(".job-search-result, .job-item, .result-item", timeout=5000)
-        except Exception:
-            logger.info(f"No job results found on IT-Jobbank for query '{q}'. Taking screenshot.")
             try:
-                os.makedirs("screenshots", exist_ok=True)
-                await page.screenshot(path=f"screenshots/empty_itjobbank_{q}.png")
+                await page.wait_for_selector(".job-search-result, .job-item, .result-item", timeout=5000)
             except Exception:
-                pass
-            continue
+                if page_num == 1:
+                    logger.info(f"No job results found on IT-Jobbank for query '{q}'. Taking screenshot.")
+                    try:
+                        os.makedirs("screenshots", exist_ok=True)
+                        await page.screenshot(path=f"screenshots/empty_itjobbank_{q}.png")
+                    except Exception:
+                        pass
+                break  # Stop paginating if no results
 
-        listings = await page.locator(".job-item, .result-item").all()
-        logger.info(f"IT-Jobbank found {len(listings)} raw listings for query '{q}'")
-        for listing in listings:
-            title_el = listing.locator("h3 a, h2 a, .job-title a").first
-            if not await title_el.count():
-                continue
-            title = (await title_el.inner_text()).strip()
-            href = await title_el.get_attribute("href") or ""
-            job_url = href if href.startswith("http") else f"https://www.it-jobbank.dk{href}"
-            
-            if "?" in job_url and not "job=" in job_url:
-                job_url = job_url.split("?")[0]
+            listings = await page.locator(".job-item, .result-item").all()
+            if not listings:
+                break
+                
+            logger.info(f"IT-Jobbank found {len(listings)} raw listings for query '{q}' on page {page_num}")
+            for listing in listings:
+                title_el = listing.locator("h3 a, h2 a, .job-title a").first
+                if not await title_el.count():
+                    continue
+                title = (await title_el.inner_text()).strip()
+                href = await title_el.get_attribute("href") or ""
+                job_url = href if href.startswith("http") else f"https://www.it-jobbank.dk{href}"
+                
+                if "?" in job_url and not "job=" in job_url:
+                    job_url = job_url.split("?")[0]
 
-            company_el = listing.locator(".company-name, .employer, .job-company").first
-            company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
+                company_el = listing.locator(".company-name, .employer, .job-company").first
+                company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
 
-            location_el = listing.locator(".job-location, .location").first
-            location_text = (await location_el.inner_text()).strip() if await location_el.count() else ""
-            
-            postal_match = re.search(r'\b(\d{4})\b', location_text)
-            postal = postal_match.group(1) if postal_match else ""
+                location_el = listing.locator(".job-location, .location").first
+                location_text = (await location_el.inner_text()).strip() if await location_el.count() else ""
+                
+                postal_match = re.search(r'\b(\d{4})\b', location_text)
+                postal = postal_match.group(1) if postal_match else ""
 
-            if is_valid_job(title, postal, company, location_text):
-                job_id_str = f"{company}_{title}_{job_url}"
-                job_id = hashlib.md5(job_id_str.encode()).hexdigest()
-                jobs.append(format_job(
-                    job_id=job_id,
-                    title=title,
-                    company=company,
-                    url=job_url,
-                    source="ITJobbank"
-                ))
+                if is_valid_job(title, postal, company, location_text):
+                    job_id_str = f"{company}_{title}_{job_url}"
+                    job_id = hashlib.md5(job_id_str.encode()).hexdigest()
+                    jobs.append(format_job(
+                        job_id=job_id,
+                        title=title,
+                        company=company,
+                        url=job_url,
+                        source="ITJobbank"
+                    ))
     return jobs
 
 async def scrape_thehub() -> list[dict]:
@@ -301,54 +313,60 @@ async def scrape_jobindex(page: Page) -> list[dict]:
     jobs = []
     logger.info("Scraping Jobindex...")
     for q in config.JOB_QUERIES:
-        await page.goto(f"https://www.jobindex.dk/jobsoegning/it/midtjylland?q={q}", timeout=30000)
-        try:
-            await page.wait_for_selector(".jobsearch-result", timeout=10000)
-        except Exception:
-            logger.warning(f"No jobsearch-result found on Jobindex for query '{q}'.")
+        for page_num in range(1, 4): # check up to 3 pages
+            url = f"https://www.jobindex.dk/jobsoegning/it/midtjylland?q={q}&page={page_num}"
+            await page.goto(url, timeout=30000)
             try:
-                os.makedirs("screenshots", exist_ok=True)
-                await page.screenshot(path=f"screenshots/empty_jobindex_{q}.png")
+                await page.wait_for_selector(".jobsearch-result", timeout=10000)
             except Exception:
-                pass
-            continue
-            
-        listings = await page.locator(".jobsearch-result").all()
-        for listing in listings:
-            title_el = listing.locator("h4 a").first
-            if not await title_el.count():
-                continue
+                if page_num == 1:
+                    logger.warning(f"No jobsearch-result found on Jobindex for query '{q}'.")
+                    try:
+                        os.makedirs("screenshots", exist_ok=True)
+                        await page.screenshot(path=f"screenshots/empty_jobindex_{q}.png")
+                    except Exception:
+                        pass
+                break
                 
-            title = await title_el.inner_text()
-            url = await title_el.get_attribute("href")
-            
-            if url and "?" in url:
-                url = url.split("?")[0]
-            
-            company = "Ukendt"
-            company_el = listing.locator(".jix_robotjob--company strong, .company-name").first
-            if await company_el.count():
-                company = await company_el.inner_text()
+            listings = await page.locator(".jobsearch-result").all()
+            if not listings:
+                break
                 
-            # Safely check for area element count to avoid 30s timeout
-            area_el = listing.locator(".jix_robotjob--area, .area").first
-            postal = ""
-            location_text = ""
-            if await area_el.count() > 0:
-                location_text = await area_el.inner_text()
-                postal_match = re.search(r'\b(\d{4})\b', location_text)
-                postal = postal_match.group(1) if postal_match else ""
-            
-            if is_valid_job(title, postal, company, location_text):
-                job_id_str = f"{company}_{title}_{url}"
-                job_id = hashlib.md5(job_id_str.encode()).hexdigest()
-                jobs.append(format_job(
-                    job_id=job_id,
-                    title=title,
-                    company=company,
-                    url=url,
-                    source="Jobindex"
-                ))
+            for listing in listings:
+                title_el = listing.locator("h4 a").first
+                if not await title_el.count():
+                    continue
+                    
+                title = await title_el.inner_text()
+                url = await title_el.get_attribute("href")
+                
+                if url and "?" in url:
+                    url = url.split("?")[0]
+                
+                company = "Ukendt"
+                company_el = listing.locator(".jix_robotjob--company strong, .company-name").first
+                if await company_el.count():
+                    company = await company_el.inner_text()
+                    
+                # Safely check for area element count to avoid 30s timeout
+                area_el = listing.locator(".jix_robotjob--area, .area").first
+                postal = ""
+                location_text = ""
+                if await area_el.count() > 0:
+                    location_text = await area_el.inner_text()
+                    postal_match = re.search(r'\b(\d{4})\b', location_text)
+                    postal = postal_match.group(1) if postal_match else ""
+                
+                if is_valid_job(title, postal, company, location_text):
+                    job_id_str = f"{company}_{title}_{url}"
+                    job_id = hashlib.md5(job_id_str.encode()).hexdigest()
+                    jobs.append(format_job(
+                        job_id=job_id,
+                        title=title,
+                        company=company,
+                        url=url,
+                        source="Jobindex"
+                    ))
     return jobs
 
 async def scrape_elevplads(page: Page) -> list[dict]:
