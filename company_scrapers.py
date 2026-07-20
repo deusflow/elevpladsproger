@@ -2,40 +2,115 @@ import json
 import logging
 import asyncio
 import os
+import re
+import hashlib
+import httpx
 from patchright.async_api import BrowserContext, Page
 import config
-import hashlib
 from scrapers import format_job, is_valid_job
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 logger = logging.getLogger("elevplads_scraper")
 
-async def extract_links_from_frame(frame, url, found_jobs):
+async def extract_links_from_frame(frame, base_url, found_jobs):
     try:
-        links = await frame.locator("a").all()
-        for link in links:
-            try:
-                text = (await link.inner_text()).lower()
-                href = await link.get_attribute("href")
-                if not href: continue
+        # Fast 1-pass execution inside browser context (avoids heavy Playwright IPC calls)
+        links_data = await frame.evaluate("""() => {
+            return Array.from(document.querySelectorAll('a')).map(a => ({
+                text: (a.innerText || a.textContent || '').trim(),
+                href: a.getAttribute('href') || ''
+            })).filter(l => l.text && l.href);
+        }""")
+        
+        for link in links_data:
+            text_lower = link["text"].lower()
+            href = link["href"]
+            if any(kw in text_lower for kw in ["datatekniker", "it-elev", "elevplads", "softwareudvikler", "cybersikkerhed", "it-sikkerhed"]):
+                if href.startswith("http"):
+                    job_url = href
+                else:
+                    job_url = base_url.rstrip("/") + "/" + href.lstrip("/")
                 
-                if "datatekniker" in text or "it-elev" in text or "elevplads" in text:
-                    if href.startswith("http"):
-                        job_url = href
-                    else:
-                        job_url = url.rstrip("/") + "/" + href.lstrip("/")
-                        
-                    found_jobs.append({
-                        "title": f"Mulig stilling: {(await link.inner_text()).strip()}",
-                        "url": job_url
-                    })
-            except Exception:
-                pass
+                found_jobs.append({
+                    "title": f"Mulig stilling: {link['text']}",
+                    "url": job_url
+                })
     except Exception:
         pass
         
     for child in frame.child_frames:
-        await extract_links_from_frame(child, url, found_jobs)
+        await extract_links_from_frame(child, base_url, found_jobs)
+
+async def extract_jobs_with_groq(company_name: str, page_url: str, page_text: str) -> list[dict]:
+    if not config.GROQ_API_KEY:
+        return []
+        
+    truncated_text = page_text[:8000]
+    
+    prompt = f"""You are an IT job scraper for Denmark (Midtjylland region).
+Analyze the following career page text for '{company_name}' ({page_url}).
+Identify any IT apprenticeship, IT trainee, IT elevplads, Datatekniker (programmering or cybersecurity), or Software developer elev jobs.
+
+IMPORTANT Rules:
+- Exclude IT supporter, infrastructure, helpdesk, or non-IT jobs.
+- Only return jobs that are IT elev / datatekniker / software development / cybersecurity.
+
+Respond ONLY with valid JSON matching this schema:
+{{
+  "jobs": [
+    {{
+      "title": "Job title",
+      "url": "Direct link or page_url if not distinct"
+    }}
+  ]
+}}
+If no relevant IT elev / datatekniker jobs are found, return {{"jobs": []}}.
+
+Page Text:
+{truncated_text}
+"""
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {config.GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "system", "content": "You are a precise JSON job extractor."},
+            {"role": "user", "content": prompt}
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.1
+    }
+    
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
+                result = json.loads(content)
+                raw_jobs = result.get("jobs", [])
+                extracted = []
+                for j in raw_jobs:
+                    title = j.get("title", "").strip()
+                    job_url = j.get("url", "").strip() or page_url
+                    if title and is_valid_job(title, "", company_name, ""):
+                        extracted.append({
+                            "title": title,
+                            "url": job_url
+                        })
+                if extracted:
+                    logger.info(f"Groq LLM extracted {len(extracted)} IT elev jobs for {company_name}")
+                return extracted
+            else:
+                logger.warning(f"Groq API error {resp.status_code}: {resp.text}")
+    except Exception as e:
+        logger.error(f"Error invoking Groq LLM for {company_name}: {e}")
+        
+    return []
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
 async def _do_scrape_company(page: Page, url: str):
@@ -45,17 +120,25 @@ async def _do_scrape_company(page: Page, url: str):
     found_jobs = []
     await extract_links_from_frame(page.main_frame, url, found_jobs)
             
-    # Structural hash: try to target the content area first, fall back to body
+    # Target content area or fallback to main/article/body
     content_el = page.locator("main, article, [class*='job'], [class*='career'], [class*='stilling'], [id*='job'], [id*='career']")
     if await content_el.count() > 0:
         body_text = await content_el.first.inner_text()
     else:
         body_text = await page.inner_text("body")
     
-    import re
-    clean_text = re.sub(r'\s+', '', body_text)
-    rounded_len = len(clean_text) // 200 * 200
-    structural_hash = hashlib.md5(f"{rounded_len}".encode()).hexdigest()
+    # Exact normalized content fingerprinting (headings + links + clean text)
+    fingerprint_data = await page.evaluate("""() => {
+        const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, .job-title, .career-title')).map(el => (el.innerText || '').trim()).join('|');
+        const jobLinks = Array.from(document.querySelectorAll('a')).map(a => (a.innerText || '').trim()).filter(t => t.length > 5).join('|');
+        return headings + '||' + jobLinks;
+    }""")
+    
+    clean_fingerprint = re.sub(r'\s+', '', fingerprint_data.lower())
+    if not clean_fingerprint or len(clean_fingerprint) < 10:
+        clean_fingerprint = re.sub(r'\s+', '', body_text.lower())
+        
+    structural_hash = hashlib.md5(clean_fingerprint.encode("utf-8")).hexdigest()
     
     return found_jobs, body_text, structural_hash
 
@@ -73,7 +156,19 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
         try:
             found_jobs, body_text, structural_hash = await _do_scrape_company(page, url)
             
-            if found_jobs:
+            # If LLM API key is present, try LLM extraction as high-precision fallback
+            llm_jobs = await extract_jobs_with_groq(name, url, body_text)
+            if llm_jobs:
+                for lj in llm_jobs:
+                    job_id = hashlib.md5(f"{name}_{lj['title']}_{lj['url']}".encode()).hexdigest()
+                    jobs.append(format_job(
+                        job_id=job_id,
+                        title=lj["title"],
+                        company=name,
+                        url=lj["url"],
+                        source="UniversalCrawler+LLM"
+                    ))
+            elif found_jobs:
                 for fj in found_jobs:
                     fj_title = fj["title"].replace("Mulig stilling: ", "")
                     # Validate through the same filter as other scrapers

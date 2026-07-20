@@ -10,9 +10,21 @@ import company_scrapers
 from config import DB_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, PROXY_URL, SUPABASE_URL, SUPABASE_KEY, logger
 import config
 
+FALLBACK_FILE = "jobs_db_fallback.json"
+
 async def load_state() -> dict:
     state = {"jobs": [], "company_hashes": {}}
     
+    # Check if we have an un-synced fallback file from a previous failed run
+    fallback_state = None
+    if os.path.exists(FALLBACK_FILE):
+        try:
+            with open(FALLBACK_FILE, "r", encoding="utf-8") as f:
+                fallback_state = json.load(f)
+                logger.info("Found un-synced local emergency state backup.")
+        except Exception as fe:
+            logger.error(f"Error loading fallback file: {fe}")
+
     # Try Supabase first
     if SUPABASE_URL and SUPABASE_KEY:
         url = f"{SUPABASE_URL}/rest/v1/state?key=eq.scraper_state&select=value"
@@ -21,25 +33,42 @@ async def load_state() -> dict:
             "Authorization": f"Bearer {SUPABASE_KEY}"
         }
         async with httpx.AsyncClient() as client:
-            try:
-                resp = await client.get(url, headers=headers, timeout=10.0)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data and isinstance(data, list):
-                        loaded = data[0].get("value", {})
-                        if isinstance(loaded, dict) and "jobs" in loaded:
-                            state = loaded
-                        elif isinstance(loaded, list):
-                            state["jobs"] = loaded
-                    return state
-                else:
-                    logger.error(f"Supabase returned status {resp.status_code}. Aborting to prevent local data overwrite.")
-                    import sys
-                    sys.exit(1)
-            except Exception as e:
-                logger.error(f"Failed to connect to Supabase: {e}. Aborting execution.")
-                import sys
-                sys.exit(1)
+            for attempt in range(1, 4):
+                try:
+                    resp = await client.get(url, headers=headers, timeout=10.0)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data and isinstance(data, list):
+                            loaded = data[0].get("value", {})
+                            if isinstance(loaded, dict) and "jobs" in loaded:
+                                state = loaded
+                            elif isinstance(loaded, list):
+                                state["jobs"] = loaded
+                        
+                        # Merge fallback state if existed
+                        if fallback_state:
+                            logger.info("Merging local fallback state into Supabase state...")
+                            existing_job_ids = {j["job_id"] for j in state.get("jobs", [])}
+                            for fj in fallback_state.get("jobs", []):
+                                if fj.get("job_id") not in existing_job_ids:
+                                    state.setdefault("jobs", []).append(fj)
+                            state.get("company_hashes", {}).update(fallback_state.get("company_hashes", {}))
+                            
+                        return state
+                    else:
+                        logger.warning(f"Supabase load attempt {attempt}/3 status {resp.status_code}")
+                except Exception as e:
+                    logger.warning(f"Supabase load attempt {attempt}/3 exception: {e}")
+                
+                await asyncio.sleep(2 ** attempt)
+                
+            if fallback_state:
+                logger.warning("Supabase load failed completely. Recovering state from local fallback file.")
+                return fallback_state
+
+            logger.error("Supabase load failed and no fallback file found. Aborting to prevent data corruption.")
+            import sys
+            sys.exit(1)
                 
     # Fallback to local DB_FILE only if Supabase is not configured
     elif os.path.exists(DB_FILE):
@@ -56,7 +85,7 @@ async def load_state() -> dict:
     return state
 
 async def save_state(state: dict):
-    # Try Supabase first
+    # Try Supabase with up to 3 retries
     if SUPABASE_URL and SUPABASE_KEY:
         url = f"{SUPABASE_URL}/rest/v1/state"
         headers = {
@@ -66,19 +95,31 @@ async def save_state(state: dict):
             "Prefer": "resolution=merge-duplicates"
         }
         async with httpx.AsyncClient() as client:
-            try:
-                resp = await client.post(url, headers=headers, json={"key": "scraper_state", "value": state}, timeout=10.0)
-                if resp.status_code in [200, 201, 204]:
-                    logger.info("Saved state to Supabase via UPSERT.")
-                    return
-                else:
-                    logger.error(f"Failed to save state to Supabase (status {resp.status_code}): {resp.text}")
-            except Exception as e:
-                logger.error(f"Error saving to Supabase: {e}")
+            for attempt in range(1, 4):
+                try:
+                    resp = await client.post(url, headers=headers, json={"key": "scraper_state", "value": state}, timeout=10.0)
+                    if resp.status_code in [200, 201, 204]:
+                        logger.info("Saved state to Supabase via UPSERT.")
+                        if os.path.exists(FALLBACK_FILE):
+                            try:
+                                os.remove(FALLBACK_FILE)
+                            except Exception:
+                                pass
+                        return
+                    else:
+                        logger.warning(f"Supabase save attempt {attempt}/3 failed (status {resp.status_code}): {resp.text}")
+                except Exception as e:
+                    logger.warning(f"Supabase save attempt {attempt}/3 exception: {e}")
                 
-        # If Supabase is configured but save failed, do NOT silently fall back
-        # to a local file that will vanish after CI/CD completes
-        logger.critical("State save to Supabase failed. Local fallback skipped to prevent duplicate notifications on next run.")
+                await asyncio.sleep(2 ** attempt)
+                
+        # If all retries failed, save emergency local backup
+        logger.error("All Supabase save attempts failed. Writing state to local emergency backup file.")
+        try:
+            with open(FALLBACK_FILE, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2, ensure_ascii=False)
+        except Exception as fe:
+            logger.error(f"Failed to write emergency fallback file: {fe}")
         return
                 
     # Fallback to local only when Supabase is NOT configured
