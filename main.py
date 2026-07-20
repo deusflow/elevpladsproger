@@ -131,14 +131,21 @@ def escape_markdown_v2(text: str) -> str:
     escape_chars = r"_*[]()~`>#+-=|{}.!"
     return "".join(f"\\{c}" if c in escape_chars else c for c in text)
 
-async def notify_telegram(jobs: list[dict], changed_companies: list[dict]):
+async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: list[str] = None):
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
         logger.warning("Telegram configuration missing. Notification skipped.")
         return
 
+    if not jobs and not changed_companies and not cycle_alerts:
+        return
+
     messages = []
     
-    current_msg = "*Nye IT Elevpladser (Midtjylland)*\n\n" if jobs else ""
+    if cycle_alerts:
+        for alert in cycle_alerts:
+            messages.append(alert)
+
+    current_msg = "🎯 *Nye IT-elevpladser fundet!*\n\n" if jobs else ""
     for job in jobs:
         title = escape_markdown_v2(job['title'])
         company = escape_markdown_v2(job['company'])
@@ -211,18 +218,16 @@ async def main():
     old_jobs = {item["job_id"]: item for item in old_jobs_list}
     
     now = datetime.now(timezone.utc)
-    retained_jobs = {}
     for jid, jdata in old_jobs.items():
         try:
             discovered = datetime.fromisoformat(jdata.get("discovered_at", now.isoformat()))
-            if (now - discovered).days < 30:
-                retained_jobs[jid] = jdata
+            if (now - discovered).days >= 30:
+                jdata["status"] = "expired"
+            else:
+                if "status" not in jdata:
+                    jdata["status"] = "active"
         except ValueError:
-            retained_jobs[jid] = jdata
-            
-    if len(retained_jobs) < len(old_jobs):
-        logger.info(f"Cleaned up {len(old_jobs) - len(retained_jobs)} old jobs from DB.")
-    old_jobs = retained_jobs
+            jdata["status"] = "active"
     
     all_items = []
 
@@ -271,7 +276,7 @@ async def main():
             await browser.close()
 
     # Process items (Jobs vs Hashes)
-    existing_ids = set(old_jobs.keys())
+    existing_ids = {jid for jid, j in old_jobs.items() if j.get("status") != "expired"}
     new_jobs = []
     changed_companies = []
     new_company_hashes = old_company_hashes.copy()
@@ -279,8 +284,9 @@ async def main():
     # Track seen (company, title) pairs to deduplicate across sources
     seen_titles = set()
     for jdata in old_jobs.values():
-        key = (jdata.get("company", "").lower().strip(), jdata.get("title", "").lower().strip())
-        seen_titles.add(key)
+        if jdata.get("status") != "expired":
+            key = (jdata.get("company", "").lower().strip(), jdata.get("title", "").lower().strip())
+            seen_titles.add(key)
     
     for item in all_items:
         if item.get("type") == "hash":
@@ -310,13 +316,22 @@ async def main():
         import ai_scorer
         await ai_scorer.enrich_jobs_with_ai(new_jobs)
         
-    await notify_telegram(new_jobs, changed_companies)
+    import cycle_predictor
+    cycle_alerts = cycle_predictor.analyze_and_predict(state)
+    
+    if cycle_alerts:
+        logger.info(f"Generated {len(cycle_alerts)} cycle prediction alerts.")
+        state_updated = True
+
+    await notify_telegram(new_jobs, changed_companies, cycle_alerts)
     
     state_updated = False
-    if new_jobs:
-        old_jobs_list = list(old_jobs.values()) + new_jobs
-        state["jobs"] = old_jobs_list
-        state_updated = True
+    # Always save state to update expiration statuses even if no new jobs
+    for nj in new_jobs:
+        nj["status"] = "active"
+        old_jobs[nj["job_id"]] = nj
+    state["jobs"] = list(old_jobs.values())
+    state_updated = True
         
     if new_company_hashes != old_company_hashes:
         state["company_hashes"] = new_company_hashes

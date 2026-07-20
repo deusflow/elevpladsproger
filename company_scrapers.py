@@ -51,15 +51,17 @@ async def extract_jobs_with_groq(company_name: str, page_url: str, page_text: st
 Analyze the following career page text for '{company_name}' ({page_url}).
 Identify any IT apprenticeship, IT trainee, IT elevplads, Datatekniker (programmering or cybersecurity), or Software developer elev jobs.
 
+CRUCIAL: You must also look for "hidden" or unsolicited (uopfordret ansøgning) apprenticeship announcements. If a paragraph mentions sending an unsolicited CV or email for an IT-elev or datatekniker role, treat it as a valid job opening with the title "Uopfordret ansøgning: IT-Elev".
+
 IMPORTANT Rules:
 - Exclude IT supporter, infrastructure, helpdesk, or non-IT jobs.
-- Only return jobs that are IT elev / datatekniker / software development / cybersecurity.
+- Only return jobs that are IT elev / datatekniker / software development / cybersecurity (including unsolicited/hidden ones).
 
 Respond ONLY with valid JSON matching this schema:
 {{
   "jobs": [
     {{
-      "title": "Job title",
+      "title": "Job title or 'Uopfordret ansøgning: IT-Elev'",
       "url": "Direct link or page_url if not distinct"
     }}
   ]
