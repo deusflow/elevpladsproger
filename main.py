@@ -198,7 +198,7 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
     if current_msg and changed_companies:
         messages.append(current_msg)
         
-    if not messages:
+    if not messages and not news_digest:
         return
 
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
