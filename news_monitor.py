@@ -65,12 +65,11 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     Companies: {companies_str}
 
     Task 2 (Russian News Feed):
-    1. Select the single BEST, most important, or most interesting IT news article from the list.
+    1. Select the single BEST, most important, or most interesting IT news article from the provided list.
     2. Retell the story in Russian using simple, plain, engaging words. State the core essence clearly without unnecessary fluff.
-    3. Add a dedicated section at the end titled "💡 **Что это значит (для IT-специалистов и обычных людей):**", where you explain the practical impact, implications for the job market, salary trends, career shifts, or technology impact.
-    4. Keep the text concise yet insightful — no walls of text, but informative and easy to read.
+    3. Add a dedicated section at the end titled "💡 **Что это значит (для IT-специалистов и обычных людей):**", where you explain the practical impact, implications for the job market, salary trends, career shifts, or technology impact. 
+    4. Keep the text concise yet insightful — no walls of text. Just extract the main point and explain it briefly.
     5. Include the link to the original article at the bottom.
-    6. If there are no relevant news, return an empty string "" for digest_ru.
 
     Articles:
     {articles_snippet}
@@ -86,7 +85,7 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     - DO NOT copy the template text above. You MUST write the actual news summary based on the Articles provided.
     - If no companies are restructuring, return an empty list [].
     - Ensure the Russian digest is well-formatted for Telegram (markdown links).
-    - If there are no relevant news, return an empty string "" for digest_ru.
+    - You MUST ALWAYS pick at least one news article and write a digest_ru, even if it's just general IT news.
     """
 
     models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
@@ -153,15 +152,17 @@ async def process_news(state: dict) -> dict:
 
     logger.info(f"Found {len(new_articles)} new articles. Sending to Groq...")
     
-    # Analyze the newest unseen articles (cap at 20 so Groq doesn't timeout/overflow context)
     analysis = await ask_groq_news(new_articles[:20], target_company_names)
     
-    # Extract links of the newly processed articles to save in state
-    processed_links = [art["link"] for art in new_articles[:20]]
+    digest_ru = analysis.get("digest_ru", "").strip()
+    
+    # Only mark these links as seen if Groq successfully generated a digest.
+    # Otherwise, we might skip them next time even if Groq failed due to rate limits.
+    processed_links = [art["link"] for art in new_articles[:20]] if digest_ru else []
     
     return {
         "restructuring_companies": analysis.get("restructuring_companies", []),
-        "digest_ru": analysis.get("digest_ru", ""),
+        "digest_ru": digest_ru,
         "new_links": processed_links
     }
 
