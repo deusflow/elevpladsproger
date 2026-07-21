@@ -89,32 +89,36 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     - If there are no relevant news, return an empty string "" for digest_ru.
     """
 
+    models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+    
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {config.GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {"role": "system", "content": "You are a JSON-only news analyzer. Return ONLY valid JSON."},
-            {"role": "user", "content": prompt}
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.2,
-        "max_tokens": 4096
-    }
+    
+    for model in models_to_try:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a JSON-only news analyzer. Return ONLY valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.2,
+            "max_tokens": 2048
+        }
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code == 200:
-                content = resp.json()["choices"][0]["message"]["content"]
-                return json.loads(content)
-            else:
-                logger.warning(f"Groq API news error {resp.status_code}: {resp.text}")
-    except Exception as e:
-        logger.error(f"Groq API exception during news analysis: {e}")
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    content = resp.json()["choices"][0]["message"]["content"]
+                    return json.loads(content)
+                else:
+                    logger.warning(f"Groq API news error with model {model} ({resp.status_code}): {resp.text}")
+        except Exception as e:
+            logger.error(f"Groq API exception during news analysis with model {model}: {e}")
 
     return {"restructuring_companies": [], "digest_ru": ""}
 

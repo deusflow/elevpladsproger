@@ -96,26 +96,30 @@ Page Text:
     
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                content = data["choices"][0]["message"]["content"]
-                result = json.loads(content)
-                raw_jobs = result.get("jobs", [])
-                extracted = []
-                for j in raw_jobs:
-                    title = j.get("title", "").strip()
-                    job_url = j.get("url", "").strip() or page_url
-                    if title and is_valid_job(title, "", company_name, ""):
-                        extracted.append({
-                            "title": title,
-                            "url": job_url
-                        })
-                if extracted:
-                    logger.info(f"Groq LLM extracted {len(extracted)} IT elev jobs for {company_name}")
-                return extracted, True
-            else:
-                logger.warning(f"Groq API error {resp.status_code}: {resp.text}")
+            for attempt in range(2):
+                resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data["choices"][0]["message"]["content"]
+                    result = json.loads(content)
+                    raw_jobs = result.get("jobs", [])
+                    extracted = []
+                    for j in raw_jobs:
+                        title = j.get("title", "").strip()
+                        job_url = j.get("url", "").strip() or page_url
+                        if title and is_valid_job(title, "", company_name, ""):
+                            extracted.append({
+                                "title": title,
+                                "url": job_url
+                            })
+                    if extracted:
+                        logger.info(f"Groq LLM extracted {len(extracted)} IT elev jobs for {company_name}")
+                    return extracted, True
+                elif resp.status_code == 429 and attempt == 0:
+                    logger.warning(f"Groq 429 rate limit hit for {company_name}, retrying in 3s...")
+                    await asyncio.sleep(3.0)
+                else:
+                    logger.warning(f"Groq API error {resp.status_code}: {resp.text}")
     except Exception as e:
         logger.error(f"Error invoking Groq LLM for {company_name}: {e}")
         
