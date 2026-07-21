@@ -37,7 +37,7 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
     is_in_region = bypass_geo
     if not is_in_region:
         if postal_code and postal_code.isdigit():
-            if 7400 <= int(postal_code) <= 8999:
+            if postal_code in config.TARGET_POSTAL_CODES:
                 is_in_region = True
         else:
             if config.CITY_PATTERN.search(location_lower) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower:
@@ -369,7 +369,7 @@ async def scrape_jobindex(page: Page) -> list[dict]:
                     ))
     return jobs
 
-async def scrape_elevplads(page: Page) -> list[dict]:
+async def scrape_elevplads() -> list[dict]:
 
     jobs = []
     

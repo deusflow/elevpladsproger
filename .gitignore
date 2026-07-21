@@ -6,3 +6,4 @@ env/
 jobs_db.json
 screenshots/
 project_audit_log.md
+jobs_db_fallback.json

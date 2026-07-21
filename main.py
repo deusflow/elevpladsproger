@@ -261,6 +261,7 @@ async def main():
 
     # API Scrapers
     all_items.extend(await scrapers.scrape_thehub())
+    all_items.extend(await scrapers.scrape_elevplads())
 
     # Browser Scrapers
     async with async_playwright() as p:
@@ -316,7 +317,6 @@ async def main():
             # Run all scrapers in parallel
             tasks = [
                 run_scraper(scrapers.scrape_laerepladsen, context),
-                run_scraper(scrapers.scrape_elevplads, context),
                 run_scraper(scrapers.scrape_jobnet, context),
                 run_scraper(scrapers.scrape_jobindex, context),
                 run_scraper(scrapers.scrape_itjobbank, context),
