@@ -135,12 +135,12 @@ def escape_markdown_v2(text: str) -> str:
     escape_chars = r"_*[]()~`>#+-=|{}.!"
     return "".join(f"\\{c}" if c in escape_chars else c for c in text)
 
-async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: list[str] = None):
+async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: list[str] = None, news_digest: str = "", restructuring_companies: list[str] = None):
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
         logger.warning("Telegram configuration missing. Notification skipped.")
         return
 
-    if not jobs and not changed_companies and not cycle_alerts:
+    if not jobs and not changed_companies and not cycle_alerts and not news_digest:
         return
 
     messages = []
@@ -161,13 +161,16 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
         is_approved = await accreditation_checker.check_accreditation(job['company'])
         accreditation_badge = "✅ Godkendt lærested: Datatekniker" if is_approved else "⚠️ Status ukendt / Kræver godkendelse"
         
+        is_restructuring = restructuring_companies and job['company'] in restructuring_companies
+        restructuring_badge = "⚠️ *Компания проходит реструктуризацию/увольнения!*\n" if is_restructuring else ""
+        
         match_score = job.get('match_score')
         if match_score is not None:
             city = escape_markdown_v2(job.get('match_city', 'Ukendt'))
             reason = escape_markdown_v2(job.get('match_reason', ''))
-            job_str = f"🎯 *{match_score}% Match* \\| {city}\n🔹 *{title}*\n🏢 {company} \\({source}\\)\n🎓 _{accreditation_badge}_\n💡 _{reason}_\n🔗 [Ansøg her]({url})\n\n"
+            job_str = f"🎯 *{match_score}% Match* \\| {city}\n🔹 *{title}*\n🏢 {company} \\({source}\\)\n🎓 _{accreditation_badge}_\n{restructuring_badge}💡 _{reason}_\n🔗 [Ansøg her]({url})\n\n"
         else:
-            job_str = f"🔹 *{title}*\n🏢 {company} \\({source}\\)\n🎓 _{accreditation_badge}_\n🔗 [Ansøg her]({url})\n\n"
+            job_str = f"🔹 *{title}*\n🏢 {company} \\({source}\\)\n🎓 _{accreditation_badge}_\n{restructuring_badge}🔗 [Ansøg her]({url})\n\n"
         
         if len(current_msg) + len(job_str) > 4000:
             messages.append(current_msg)
@@ -215,6 +218,23 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
                     logger.info("Sent Telegram notification successfully.")
             except Exception as e:
                 logger.error(f"Error sending to telegram: {e}")
+                
+        # Send news digest separately using Markdown (V1) to avoid strict escaping errors
+        if news_digest:
+            payload = {
+                "chat_id": config.TELEGRAM_CHAT_ID,
+                "text": news_digest,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True
+            }
+            try:
+                resp = await client.post(url, json=payload, timeout=10.0)
+                if resp.status_code != 200:
+                    logger.error(f"Failed to send telegram news digest: {resp.text}")
+                else:
+                    logger.info("Sent Telegram news digest successfully.")
+            except Exception as e:
+                logger.error(f"Error sending news digest to telegram: {e}")
 
 async def main():
     logger.info("Starting scrape run...")
@@ -355,11 +375,28 @@ async def main():
     import cycle_predictor
     cycle_alerts = cycle_predictor.analyze_and_predict(state)
     
+    import news_monitor
+    news_result = await news_monitor.process_news(state)
+    news_digest = news_result.get("digest_ru", "")
+    restructuring_companies = news_result.get("restructuring_companies", [])
+    new_links = news_result.get("new_links", [])
+    
+    if new_links:
+        state_updated = True
+        state["seen_news"] = state.get("seen_news", []) + new_links
+        # Keep only the last 200 seen news links to avoid unbounded growth
+        state["seen_news"] = state["seen_news"][-200:]
+        if restructuring_companies:
+            state["restructuring_companies"] = list(set(state.get("restructuring_companies", []) + restructuring_companies))
+            
+    # Also pass historical restructuring companies to the notification logic just in case
+    active_restructuring = state.get("restructuring_companies", [])
+    
     if cycle_alerts:
         logger.info(f"Generated {len(cycle_alerts)} cycle prediction alerts.")
         state_updated = True
 
-    await notify_telegram(new_jobs, changed_companies, cycle_alerts)
+    await notify_telegram(new_jobs, changed_companies, cycle_alerts, news_digest, active_restructuring)
     
     state_updated = False
     # Always save state to update expiration statuses even if no new jobs
