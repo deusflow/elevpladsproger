@@ -65,23 +65,28 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     Companies: {companies_str}
 
     Task 2 (Russian News Feed):
-    Select the most generally relevant IT news from these articles (focus on big tech, local Danish IT market, AI, major layoffs, or anything interesting for IT professionals).
-    Write an engaging, free-form news post in Russian for a Telegram channel. Tell a short story or give an interesting summary of what's happening. Add emojis.
-    Include the links to the original articles you mention. If there are no relevant news, leave it empty.
+    1. Select the single BEST, most important, or most interesting IT news article from the list.
+    2. Retell the story in Russian using simple, plain, engaging words. State the core essence clearly without unnecessary fluff.
+    3. Add a dedicated section at the end titled "💡 **Что это значит (для IT-специалистов и обычных людей):**", where you explain the practical impact, implications for the job market, salary trends, career shifts, or technology impact.
+    4. Keep the text concise yet insightful — no walls of text, but informative and easy to read.
+    5. Include the link to the original article at the bottom.
+    6. If there are no relevant news, return an empty string "" for digest_ru.
 
     Articles:
     {articles_snippet}
 
     Return a JSON object EXACTLY like this:
     {{
-        "restructuring_companies": ["CompanyName1", "CompanyName2"],
-        "digest_ru": "📢 Срочные новости ИТ Дании!\\n\\nСегодня стало известно, что... [Читать далее](link)"
+        "restructuring_companies": ["list", "of", "strings"],
+        "digest_ru": "Your engaging Russian news post goes here..."
     }}
 
     Rules:
     - Return valid JSON only.
+    - DO NOT copy the template text above. You MUST write the actual news summary based on the Articles provided.
     - If no companies are restructuring, return an empty list [].
     - Ensure the Russian digest is well-formatted for Telegram (markdown links).
+    - If there are no relevant news, return an empty string "" for digest_ru.
     """
 
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -96,7 +101,8 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
             {"role": "user", "content": prompt}
         ],
         "response_format": {"type": "json_object"},
-        "temperature": 0.2
+        "temperature": 0.2,
+        "max_tokens": 4096
     }
 
     try:

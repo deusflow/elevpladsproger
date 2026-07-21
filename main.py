@@ -377,7 +377,7 @@ async def main():
     
     import news_monitor
     news_result = await news_monitor.process_news(state)
-    news_digest = news_result.get("digest_ru", "")
+    news_digest = str(news_result.get("digest_ru", "")).strip()
     restructuring_companies = news_result.get("restructuring_companies", [])
     new_links = news_result.get("new_links", [])
     
