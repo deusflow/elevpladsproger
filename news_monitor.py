@@ -52,7 +52,9 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     # Limit to top 20 latest articles across both feeds to save tokens
     articles_snippet = ""
     for idx, art in enumerate(articles[:20]):
-        articles_snippet += f"[{idx+1}] Title: {art['title']}\nSummary: {art['description']}\nLink: {art['link']}\n\n"
+        # Truncate description to max 200 characters to heavily save tokens!
+        desc = art['description'][:200] + "..." if len(art['description']) > 200 else art['description']
+        articles_snippet += f"[{idx+1}] Title: {art['title']}\nSummary: {desc}\nLink: {art['link']}\n\n"
 
     companies_str = ", ".join(target_companies)
 
@@ -67,9 +69,23 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     Task 2 (Russian News Feed):
     1. Select the single BEST, most important, or most interesting IT news article from the provided list.
     2. Retell the story in Russian using simple, plain, engaging words. State the core essence clearly without unnecessary fluff.
-    3. Add a dedicated section at the end titled "💡 **Что это значит (для IT-специалистов и обычных людей):**", where you explain the practical impact, implications for the job market, salary trends, career shifts, or technology impact. 
-    4. Keep the text concise yet insightful — no walls of text. Just extract the main point and explain it briefly.
-    5. Include the link to the original article at the bottom.
+    3. Generate the response strictly matching this structure:
+
+    ## 🤖 [Catchy Title with an Emoji]
+
+    [Paragraph 1 explaining the core news story]
+
+    [Paragraph 2 providing background details or explanation]
+
+    💡 **Что это значит (для IT-специалистов и обычных людей):**
+
+    [Paragraph explaining what this means for IT specialists/developers]
+
+    [Paragraph explaining what this means for ordinary users]
+
+    [One catchy concluding sentence or hook]
+
+    🔗 Оригинал: [[original_link]]([original_link])
 
     Articles:
     {articles_snippet}
@@ -77,14 +93,14 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     Return a JSON object EXACTLY like this:
     {{
         "restructuring_companies": ["list", "of", "strings"],
-        "digest_ru": "Your engaging Russian news post goes here..."
+        "digest_ru": "Your engaging Russian news post strictly in the markdown format above..."
     }}
 
     Rules:
     - Return valid JSON only.
     - DO NOT copy the template text above. You MUST write the actual news summary based on the Articles provided.
     - If no companies are restructuring, return an empty list [].
-    - Ensure the Russian digest is well-formatted for Telegram (markdown links).
+    - Ensure the Russian digest is well-formatted for Telegram using Markdown (V1) style.
     - You MUST ALWAYS pick at least one news article and write a digest_ru, even if it's just general IT news.
     """
 

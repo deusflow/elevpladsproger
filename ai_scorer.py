@@ -66,7 +66,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": "llama-3.1-8b-instant",
         "messages": [
             {"role": "system", "content": "You are a JSON-only job evaluator. Return ONLY valid JSON."},
             {"role": "user", "content": prompt}
