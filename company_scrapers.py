@@ -45,6 +45,12 @@ async def extract_links_from_frame(frame, base_url, found_jobs):
 async def extract_jobs_with_groq(company_name: str, page_url: str, page_text: str) -> tuple[list[dict], bool]:
     if not config.GROQ_API_KEY:
         return [], False
+
+    # Keyword pre-filter to avoid burning Groq tokens on pages without relevant keywords
+    keywords = ["elev", "lærling", "trainee", "uddannelse", "praktik", "uopfordret", "datatekniker", "softwareudvikler", "it-"]
+    text_lower = page_text.lower()
+    if not any(k in text_lower for k in keywords):
+        return [], True
         
     truncated_text = page_text[:8000]
     
@@ -79,7 +85,7 @@ Page Text:
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": "llama-3.1-8b-instant",
         "messages": [
             {"role": "system", "content": "You are a precise JSON job extractor."},
             {"role": "user", "content": prompt}
