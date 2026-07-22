@@ -49,43 +49,33 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     if not config.GROQ_API_KEY or not articles:
         return {"restructuring_companies": [], "digest_ru": ""}
 
-    # Limit to top 20 latest articles across both feeds to save tokens
+    # Limit to top 15 latest articles across both feeds, with 800-char descriptions for rich context
     articles_snippet = ""
-    for idx, art in enumerate(articles[:20]):
-        # Truncate description to max 200 characters to heavily save tokens!
-        desc = art['description'][:200] + "..." if len(art['description']) > 200 else art['description']
+    for idx, art in enumerate(articles[:15]):
+        desc = art['description'][:800] + "..." if len(art['description']) > 800 else art['description']
         articles_snippet += f"[{idx+1}] Title: {art['title']}\nSummary: {desc}\nLink: {art['link']}\n\n"
 
     companies_str = ", ".join(target_companies)
 
     prompt = f"""
-    You are an expert IT news analyst for a Telegram channel.
+    You are an expert IT tech journalist and blogger for a popular Telegram channel.
     Below are the latest Danish IT news articles.
 
     Task 1 (Layoffs/Restructuring):
     Check if any of the following specific companies are mentioned in the news regarding layoffs (fyringer), restructuring, or mass firings:
     Companies: {companies_str}
 
-    Task 2 (Russian News Feed):
-    1. Select the single BEST, most important, or most interesting IT news article from the provided list.
-    2. Retell the story in Russian using simple, plain, engaging words. State the core essence clearly without unnecessary fluff.
-    3. Generate the response strictly matching this structure:
-
-    ## 🤖 [Catchy Title with an Emoji]
-
-    [Paragraph 1 explaining the core news story]
-
-    [Paragraph 2 providing background details or explanation]
-
-    💡 **Что это значит (для IT-специалистов и обычных людей):**
-
-    [Paragraph explaining what this means for IT specialists/developers]
-
-    [Paragraph explaining what this means for ordinary users]
-
-    [One catchy concluding sentence or hook]
-
-    🔗 Оригинал: [[original_link]]([original_link])
+    Task 2 (Engaging Russian News Post):
+    1. Select the single MOST interesting or impactfull IT news article from the provided list.
+    2. Write a lively, engaging, well-structured Telegram post in Russian ("живая, увлекательная подача").
+    3. Add necessary context, background, or real-world implications so the reader understands WHY this matters.
+    
+    STRICT Rules for the Russian post:
+    - NEVER use robotic boilerplate AI templates or phrases like "Для IT-специалистов это означает...", "Это значит, что нужно быть осведомленным", or "Безопасность должна быть приоритетом".
+    - Write naturally, like a human tech editor explaining news to developers and tech enthusiasts.
+    - Use clear structure: an engaging headline with an emoji, 2-3 readable paragraphs explaining the news + background context, followed by a bulleted breakdown of practical takeaways or key threats if applicable.
+    - End with a clean link line: 🔗 Оригинал: [link]
+    - Format strictly for Telegram using standard Markdown.
 
     Articles:
     {articles_snippet}
@@ -93,15 +83,13 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     Return a JSON object EXACTLY like this:
     {{
         "restructuring_companies": ["list", "of", "strings"],
-        "digest_ru": "Your engaging Russian news post strictly in the markdown format above..."
+        "digest_ru": "Your engaging Russian news post here..."
     }}
 
     Rules:
     - Return valid JSON only.
-    - DO NOT copy the template text above. You MUST write the actual news summary based on the Articles provided.
     - If no companies are restructuring, return an empty list [].
-    - Ensure the Russian digest is well-formatted for Telegram using Markdown (V1) style.
-    - You MUST ALWAYS pick at least one news article and write a digest_ru, even if it's just general IT news.
+    - You MUST ALWAYS pick at least one news article and write digest_ru.
     """
 
     models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
@@ -116,11 +104,11 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
         payload = {
             "model": model,
             "messages": [
-                {"role": "system", "content": "You are a JSON-only news analyzer. Return ONLY valid JSON."},
+                {"role": "system", "content": "You are a professional IT journalist and JSON writer. Write engaging, non-robotic tech news digests."},
                 {"role": "user", "content": prompt}
             ],
             "response_format": {"type": "json_object"},
-            "temperature": 0.2,
+            "temperature": 0.4,
             "max_tokens": 2048
         }
 
@@ -168,13 +156,13 @@ async def process_news(state: dict) -> dict:
 
     logger.info(f"Found {len(new_articles)} new articles. Sending to Groq...")
     
-    analysis = await ask_groq_news(new_articles[:20], target_company_names)
+    analysis = await ask_groq_news(new_articles[:15], target_company_names)
     
     digest_ru = analysis.get("digest_ru", "").strip()
     
     # Only mark these links as seen if Groq successfully generated a digest.
     # Otherwise, we might skip them next time even if Groq failed due to rate limits.
-    processed_links = [art["link"] for art in new_articles[:20]] if digest_ru else []
+    processed_links = [art["link"] for art in new_articles[:15]] if digest_ru else []
     
     return {
         "restructuring_companies": analysis.get("restructuring_companies", []),
