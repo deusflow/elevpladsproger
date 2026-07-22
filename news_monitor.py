@@ -58,27 +58,33 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     companies_str = ", ".join(target_companies)
 
     prompt = f"""
-    You are an expert IT tech journalist and blogger for a popular Telegram channel.
+    You are a world-class IT tech journalist and senior editor for a popular Telegram tech channel.
     Below are the latest Danish IT news articles.
 
     Task 1 (Layoffs/Restructuring):
     Check if any of the following specific companies are mentioned in the news regarding layoffs (fyringer), restructuring, or mass firings:
     Companies: {companies_str}
 
-    Task 2 (Engaging Russian News Post):
-    1. Select the single MOST interesting or impactful IT news article from the provided list.
-    2. Write a lively, engaging, well-structured Telegram post in Russian ("живая, увлекательная подача").
-    3. Add necessary context, background, or real-world implications so the reader understands WHY this matters.
-    
+    Task 2 (High-Substance Russian Tech Digest Post):
+    1. Select the single MOST interesting, technical, or impactful IT news article from the list.
+    2. Write a clear, engaging, and SUBSTANTIAL Telegram post in Russian.
+
+    CRITICAL Requirements for Content Quality (DO NOT GENERATE EMPTY FLUFF):
+    - ALWAYS EXPLAIN THE SPECIFIC MECHANISM: If the news mentions a change or removal (e.g. "no more credit card numbers", "new security rule", "system shutdown"), YOU MUST EXPLICITLY STATE WHAT REPLACES IT AND HOW IT WORKS (e.g. Biometrics, Passkeys, Tokenization, Click to Pay, WebAuthn, OAuth, etc.).
+    - If the RSS summary snippet is brief, leverage your internal IT domain knowledge to provide the exact technological context and explanation of how this technology works.
+    - NEVER repeat the same point across paragraphs. Every sentence must deliver NEW facts, technical specifics, or concrete examples.
+    - Answer 3 core questions: 
+      1) What EXACTLY happened/was announced? 
+      2) How does the underlying technology or mechanism work (what replaces the old way)? 
+      3) What is the real-world impact or practical takeaway for developers/tech users?
+
     CRITICAL Telegram Formatting Rules:
-    - NEVER use '#' or '##' Markdown headings! Telegram Markdown DOES NOT support '#'. Using '## Title' renders as ugly plain text '## Title'.
-    - For the main post title, use bold text with an emoji on the first line: e.g. *🚨 Заголовок новости*
-    - For section subheadings, use bold text with emojis: e.g. *💡 Контекст:* or *⚡ Главные риски:*
-    - Use '• ' (bullet symbol) for lists.
-    - NEVER use robotic boilerplate AI phrases like "Для IT-специалистов это означает...", "Это значит, что нужно быть осведомленным", or "Безопасность должна быть приоритетом".
-    - Write naturally, like a human tech editor explaining news to developers.
+    - NEVER use '#' or '##' Markdown headings! Telegram Markdown DOES NOT support '#'.
+    - First line: *🚨 [Catchy Specific Headline]*
+    - Subheadings using bold text + emojis: e.g. *💡 Как это работает:* or *⚡ Главные изменения:*
+    - Bullet points using '• ' for specific technical details or advantages.
     - End with a clean link line: 🔗 [Читать оригинал]([original_link])
-    - Use standard Telegram Markdown (v1): *bold*, _italic_, `code`, [link text](url).
+    - Format strictly for Telegram using standard Markdown (v1): *bold*, _italic_, `code`, [link text](url).
 
     Articles:
     {articles_snippet}
@@ -86,7 +92,7 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     Return a JSON object EXACTLY like this:
     {{
         "restructuring_companies": ["list", "of", "strings"],
-        "digest_ru": "Your engaging Russian news post here..."
+        "digest_ru": "Your high-substance Russian news post here..."
     }}
 
     Rules:
