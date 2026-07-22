@@ -66,16 +66,19 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     Companies: {companies_str}
 
     Task 2 (Engaging Russian News Post):
-    1. Select the single MOST interesting or impactfull IT news article from the provided list.
+    1. Select the single MOST interesting or impactful IT news article from the provided list.
     2. Write a lively, engaging, well-structured Telegram post in Russian ("живая, увлекательная подача").
     3. Add necessary context, background, or real-world implications so the reader understands WHY this matters.
     
-    STRICT Rules for the Russian post:
-    - NEVER use robotic boilerplate AI templates or phrases like "Для IT-специалистов это означает...", "Это значит, что нужно быть осведомленным", or "Безопасность должна быть приоритетом".
-    - Write naturally, like a human tech editor explaining news to developers and tech enthusiasts.
-    - Use clear structure: an engaging headline with an emoji, 2-3 readable paragraphs explaining the news + background context, followed by a bulleted breakdown of practical takeaways or key threats if applicable.
-    - End with a clean link line: 🔗 Оригинал: [link]
-    - Format strictly for Telegram using standard Markdown.
+    CRITICAL Telegram Formatting Rules:
+    - NEVER use '#' or '##' Markdown headings! Telegram Markdown DOES NOT support '#'. Using '## Title' renders as ugly plain text '## Title'.
+    - For the main post title, use bold text with an emoji on the first line: e.g. *🚨 Заголовок новости*
+    - For section subheadings, use bold text with emojis: e.g. *💡 Контекст:* or *⚡ Главные риски:*
+    - Use '• ' (bullet symbol) for lists.
+    - NEVER use robotic boilerplate AI phrases like "Для IT-специалистов это означает...", "Это значит, что нужно быть осведомленным", or "Безопасность должна быть приоритетом".
+    - Write naturally, like a human tech editor explaining news to developers.
+    - End with a clean link line: 🔗 [Читать оригинал]([original_link])
+    - Use standard Telegram Markdown (v1): *bold*, _italic_, `code`, [link text](url).
 
     Articles:
     {articles_snippet}
