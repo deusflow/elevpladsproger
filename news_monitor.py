@@ -5,7 +5,7 @@ import json
 import asyncio
 from datetime import datetime
 import config
-
+from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
 logger = logging.getLogger("elevplads_scraper")
 
 RSS_FEEDS = {
@@ -150,7 +150,7 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
 
     # 1. Try Gemini API first if key is available
     if config.GEMINI_API_KEY:
-        gemini_models = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro"]
+        gemini_models = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
         for g_model in gemini_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             payload = {
@@ -161,16 +161,29 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
                 }
             }
             try:
-                async with httpx.AsyncClient(timeout=35.0) as client:
-                    resp = await client.post(url, json=payload)
-                    if resp.status_code == 200:
-                        res_json = resp.json()
-                        text_content = res_json["candidates"][0]["content"]["parts"][0]["text"]
-                        parsed = json.loads(text_content)
-                        logger.info(f"Successfully generated digest via Gemini API model ({g_model})")
-                        return parsed
-                    else:
-                        logger.warning(f"Gemini API error with model {g_model} ({resp.status_code}): {resp.text}")
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(3),
+                    wait=wait_exponential(multiplier=1.5, min=2, max=10),
+                    reraise=True
+                ):
+                    with attempt:
+                        # Increased timeout for generative LLMs to 60s read, 15s connect
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+                            resp = await client.post(url, json=payload)
+                            
+                            # Retry strictly on rate limits and server errors
+                            if resp.status_code in [429, 500, 502, 503, 504]:
+                                logger.warning(f"Gemini API transient error {resp.status_code} on {g_model}, retrying...")
+                                resp.raise_for_status() # Trigger tenacity retry
+                            elif resp.status_code != 200:
+                                logger.warning(f"Gemini API fatal error with model {g_model} ({resp.status_code}): {resp.text}")
+                                break # Do not retry 400 Bad Request, etc.
+                                
+                            res_json = resp.json()
+                            text_content = res_json["candidates"][0]["content"]["parts"][0]["text"]
+                            parsed = json.loads(text_content)
+                            logger.info(f"Successfully generated digest via Gemini API model ({g_model})")
+                            return parsed
             except Exception as e:
                 logger.error(f"Gemini API exception with model {g_model}: {e}")
 
@@ -196,14 +209,25 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
             }
 
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
-                    if resp.status_code == 200:
-                        content = resp.json()["choices"][0]["message"]["content"]
-                        logger.info(f"Successfully generated digest via Groq fallback ({model})")
-                        return json.loads(content)
-                    else:
-                        logger.warning(f"Groq API news error with model {model} ({resp.status_code}): {resp.text}")
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(3),
+                    wait=wait_exponential(multiplier=1.5, min=2, max=10),
+                    reraise=True
+                ):
+                    with attempt:
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+                            resp = await client.post(url, headers=headers, json=payload)
+                            
+                            if resp.status_code in [429, 500, 502, 503, 504]:
+                                logger.warning(f"Groq API transient error {resp.status_code} on {model}, retrying...")
+                                resp.raise_for_status()
+                            elif resp.status_code != 200:
+                                logger.warning(f"Groq API fatal error with model {model} ({resp.status_code}): {resp.text}")
+                                break 
+
+                            content = resp.json()["choices"][0]["message"]["content"]
+                            logger.info(f"Successfully generated digest via Groq fallback ({model})")
+                            return json.loads(content)
             except Exception as e:
                 logger.error(f"Groq API exception during news analysis with model {model}: {e}")
 
