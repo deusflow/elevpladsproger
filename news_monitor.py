@@ -92,16 +92,20 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
 
     CRITICAL TELEGRAM MOBILE FORMATTING RULES:
     - NO LEADING SPACES OR TABS! Every line must start at column 0.
-    - Exactly ONE blank line (`\n\n`) between sections. Never output multiple empty lines.
-    - Divider line MUST be exactly: `▫️ ▫️ ▫️` (do NOT use long lines that wrap on iPhone screens!).
+    - Exactly ONE blank line (`\\n\\n`) between sections. Never output multiple empty lines.
     - NO Markdown headers (`#` or `##`)! Use standard Telegram Markdown (v1): *bold*, _italic_, `code`, [link text](url).
 
+    CRITICAL LINGUISTIC RULES FOR AI:
+    - DO NOT TRANSLATE EMOJIS! Always output the EXACT emojis from the template (📰, 📌, ⚙️, ⚡, 🔗, 💡). Never translate them to text like "Свет" or "Точка".
+    - The separator line MUST be EXACTLY the three unicode squares `▫️ ▫️ ▫️`. Do NOT write "Точка Точка Точка".
+    - Keep all bold asterisks (*).
+
     CRITICAL CONTENT EXPANSION REQUIREMENTS:
-    - EXPAND WITH DOMAIN KNOWLEDGE: RSS snippets are often brief (just 1-2 sentences). You MUST use your extensive internal IT domain knowledge to expand on the topic and write real, detailed, high-value technical paragraphs for ⚙️ *Техническая суть:* and ⚡ *Почему это важно:*. 
-    - NEVER write generic one-liners or placeholders like "нужно учиться" or "это важно для рынка". Explain the SPECIFIC tech, protocols, frameworks, or architectural impact!
+    - EXPAND WITH DOMAIN KNOWLEDGE: RSS snippets are often brief. You MUST use your extensive internal IT domain knowledge to expand on the topic and write real, detailed, high-value technical paragraphs for ⚙️ *Техническая суть:* and ⚡ *Почему это важно:*. 
+    - NEVER write generic one-liners. Explain the SPECIFIC tech, protocols, frameworks, or architectural impact!
 
-    EXACT TELEGRAM TEMPLATE TO FOLLOW:
-
+    EXACT TELEGRAM TEMPLATE TO FOLLOW (copy the emojis and formatting EXACTLY):
+    ```
     📰 *[Catchy, Specific Headline in Russian]*
 
     📌 *Что произошло:*
@@ -122,6 +126,7 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
     [1-2 short sentences defining the term directly and simply without fluff]
     • [Short key point 1 (max 1 line)]
     • [Short key point 2 (max 1 line)]
+    ```
 
     CRITICAL Requirements for the Tech Fact Footer ("{selected_term}"):
     - Keep it ULTRA-CONCISE (200–350 characters total).
@@ -133,7 +138,7 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
     Return a JSON object EXACTLY like this:
     {{
         "restructuring_companies": ["list", "of", "strings"],
-        "digest_ru": "Your clean, unindented Telegram post...",
+        "digest_ru": "Your clean, unindented Telegram post following the template EXACTLY...",
         "used_term": "{selected_term}"
     }}
 
