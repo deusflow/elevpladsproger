@@ -75,7 +75,7 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
     companies_str = ", ".join(target_companies)
 
     prompt = f"""
-    You are a world-class IT tech journalist and senior editor for a popular Telegram tech channel read by developers and engineers.
+    You are a senior IT editor for a top Telegram tech channel read on mobile phones (iPhones / Android).
     Below are the latest Danish IT news articles.
 
     Task 1 (Layoffs/Restructuring):
@@ -88,40 +88,40 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
        - 25% focus on broader Tech Scene: Startups, IT policy, major infra.
        - Ignore consumer gadget reviews or non-IT fluff.
     2. Write a clear, engaging, and SUBSTANTIAL Telegram post in Russian.
-    3. At the very end of the post, append an Educational Tech Fact about the term: "{selected_term}"
+    3. At the end, append a SHORT, COMPACT Educational Tech Fact about the term: "{selected_term}"
 
-    CRITICAL STRUCTURE AND VISUAL FORMATTING REQUIREMENTS:
-    - ALWAYS insert DOUBLE line breaks (`\n\n`) between EVERY paragraph, subsection, link, and block! Do NOT merge text into wall-of-text blocks.
-    - NEVER use Markdown headers (`#` or `##`)! Use standard Telegram Markdown (v1): *bold*, _italic_, `code`, [link text](url).
+    CRITICAL TELEGRAM MOBILE FORMATTING RULES:
+    - NO LEADING SPACES OR TABS! Every line must start at column 0.
+    - Exactly ONE blank line (`\n\n`) between sections. Never output multiple empty lines.
+    - Divider line MUST be exactly: `▫️ ▫️ ▫️` (do NOT use long lines that wrap on iPhone screens!).
+    - NO Markdown headers (`#` or `##`)! Use standard Telegram Markdown (v1): *bold*, _italic_, `code`, [link text](url).
 
-    EXACT POST STRUCTURE TO FOLLOW:
+    EXACT TELEGRAM TEMPLATE TO FOLLOW:
 
     📰 *[Catchy, Specific Headline in Russian]*
 
     📌 *Что произошло:*
-    [1-2 clear sentences explaining the exact news event]
+    [1-2 clear sentences explaining the event]
 
     ⚙️ *Техническая суть:*
-    [2-3 detailed sentences explaining how the underlying technology works, what replaces the old way, and exact mechanisms]
+    [2-3 sentences explaining technical mechanism/architecture]
 
     ⚡ *Почему это важно:*
-    [1-2 sentences explaining practical impact for developers, security, or the tech market]
+    [1-2 sentences on impact for developers/market]
 
     🔗 [Читать первоисточник]([original_link])
 
-    ───────────────
+    ▫️ ▫️ ▫️
 
     💡 *IT-Термин недели: {selected_term}*
 
-    [Short 2-3 sentence definition explaining the concept simply and clearly without fluff]
-
-    • [Bullet point 1]
-    • [Bullet point 2]
-    • [Bullet point 3]
+    [1-2 short sentences defining the term directly and simply without fluff]
+    • [Short key point 1 (max 1 line)]
+    • [Short key point 2 (max 1 line)]
 
     CRITICAL Requirements for the Tech Fact Footer ("{selected_term}"):
-    - Length MUST be 400-600 characters total.
-    - No generic intros like "Сегодня разберем...". Start directly with the core definition.
+    - Keep it ULTRA-CONCISE (200–350 characters total).
+    - Maximum 2 bullet points. Each bullet point MUST be 1 short line.
 
     Articles:
     {articles_snippet}
@@ -129,7 +129,7 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
     Return a JSON object EXACTLY like this:
     {{
         "restructuring_companies": ["list", "of", "strings"],
-        "digest_ru": "Your complete Telegram post with exact double line breaks and section dividers...",
+        "digest_ru": "Your clean, unindented Telegram post...",
         "used_term": "{selected_term}"
     }}
 
