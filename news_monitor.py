@@ -148,36 +148,64 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
     - You MUST ALWAYS pick at least one news article and write digest_ru.
     """
 
-    models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
-    
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {config.GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    for model in models_to_try:
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "You are a professional IT journalist and JSON writer. Write engaging, non-robotic tech news digests."},
-                {"role": "user", "content": prompt}
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.4,
-            "max_tokens": 2048
-        }
+    # 1. Try Gemini API first if key is available
+    if config.GEMINI_API_KEY:
+        gemini_models = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"]
+        for g_model in gemini_models:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "temperature": 0.3
+                }
+            }
+            try:
+                async with httpx.AsyncClient(timeout=35.0) as client:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        res_json = resp.json()
+                        text_content = res_json["candidates"][0]["content"]["parts"][0]["text"]
+                        parsed = json.loads(text_content)
+                        logger.info(f"Successfully generated digest via Gemini API model ({g_model})")
+                        return parsed
+                    else:
+                        logger.warning(f"Gemini API error with model {g_model} ({resp.status_code}): {resp.text}")
+            except Exception as e:
+                logger.error(f"Gemini API exception with model {g_model}: {e}")
 
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, headers=headers, json=payload)
-                if resp.status_code == 200:
-                    content = resp.json()["choices"][0]["message"]["content"]
-                    return json.loads(content)
-                else:
-                    logger.warning(f"Groq API news error with model {model} ({resp.status_code}): {resp.text}")
-        except Exception as e:
-            logger.error(f"Groq API exception during news analysis with model {model}: {e}")
+    # 2. Fallback to Groq API if Gemini is unavailable or fails
+    if config.GROQ_API_KEY:
+        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {config.GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        for model in models_to_try:
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You are a professional IT journalist and JSON writer. Write engaging, non-robotic tech news digests."},
+                    {"role": "user", "content": prompt}
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.4,
+                "max_tokens": 2048
+            }
+
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
+                    if resp.status_code == 200:
+                        content = resp.json()["choices"][0]["message"]["content"]
+                        logger.info(f"Successfully generated digest via Groq fallback ({model})")
+                        return json.loads(content)
+                    else:
+                        logger.warning(f"Groq API news error with model {model} ({resp.status_code}): {resp.text}")
+            except Exception as e:
+                logger.error(f"Groq API exception during news analysis with model {model}: {e}")
 
     return {"restructuring_companies": [], "digest_ru": ""}
 
