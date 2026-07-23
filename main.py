@@ -404,7 +404,8 @@ async def main():
 
     if mode in ['news', 'all']:
         import news_monitor
-        news_result = await news_monitor.process_news(state)
+        force_post_env = os.getenv("FORCE_POST", "false").lower() == "true"
+        news_result = await news_monitor.process_news(state, force_post=force_post_env)
         news_digest = str(news_result.get("digest_ru", "")).strip()
         restructuring_companies = news_result.get("restructuring_companies", [])
         new_links = news_result.get("new_links", [])

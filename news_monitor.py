@@ -233,8 +233,8 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
 
     return {"restructuring_companies": [], "digest_ru": ""}
 
-async def process_news(state: dict) -> dict:
-    """Fetch news, analyze with Groq, and return restructuring companies, digest, and used term if new articles found."""
+async def process_news(state: dict, force_post: bool = False) -> dict:
+    """Fetch news, analyze with LLM, and return restructuring companies, digest, and used term if new articles found."""
     seen_news = state.get("seen_news", [])
     used_terms = state.get("used_terms", [])
     
@@ -256,8 +256,12 @@ async def process_news(state: dict) -> dict:
         articles = await fetch_rss(url)
         all_articles.extend(articles)
 
-    # Filter out seen articles based on link
-    new_articles = [art for art in all_articles if art["link"] not in seen_news]
+    # Filter out seen articles based on link unless force_post is True
+    if force_post:
+        logger.info("force_post is True, skipping seen_news check.")
+        new_articles = all_articles
+    else:
+        new_articles = [art for art in all_articles if art["link"] not in seen_news]
     
     if not new_articles:
         logger.info("No new news articles to process.")

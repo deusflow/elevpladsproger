@@ -4,7 +4,12 @@ on:
     # Run 5 times a day (06:00, 10:00, 14:00, 18:00, 21:00 UTC)
     - cron: '0 6,10,14,18,21 * * *'
   workflow_dispatch:
-
+    inputs:
+      force_post:
+        description: 'Force post news (ignore seen_news)'
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: write
 
@@ -35,4 +40,5 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FORCE_POST: ${{ github.event.inputs.force_post }}
         run: python main.py --mode news
