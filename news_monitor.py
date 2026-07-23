@@ -96,6 +96,10 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
     - Divider line MUST be exactly: `▫️ ▫️ ▫️` (do NOT use long lines that wrap on iPhone screens!).
     - NO Markdown headers (`#` or `##`)! Use standard Telegram Markdown (v1): *bold*, _italic_, `code`, [link text](url).
 
+    CRITICAL CONTENT EXPANSION REQUIREMENTS:
+    - EXPAND WITH DOMAIN KNOWLEDGE: RSS snippets are often brief (just 1-2 sentences). You MUST use your extensive internal IT domain knowledge to expand on the topic and write real, detailed, high-value technical paragraphs for ⚙️ *Техническая суть:* and ⚡ *Почему это важно:*. 
+    - NEVER write generic one-liners or placeholders like "нужно учиться" or "это важно для рынка". Explain the SPECIFIC tech, protocols, frameworks, or architectural impact!
+
     EXACT TELEGRAM TEMPLATE TO FOLLOW:
 
     📰 *[Catchy, Specific Headline in Russian]*
@@ -104,10 +108,10 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
     [1-2 clear sentences explaining the event]
 
     ⚙️ *Техническая суть:*
-    [2-3 sentences explaining technical mechanism/architecture]
+    [2-3 detailed technical sentences explaining the underlying mechanism/architecture/technology]
 
     ⚡ *Почему это важно:*
-    [1-2 sentences on impact for developers/market]
+    [1-2 informative sentences on practical impact for developers or the IT industry]
 
     🔗 [Читать первоисточник]([original_link])
 
