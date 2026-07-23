@@ -13,20 +13,26 @@ RSS_FEEDS = {
     "Computerworld": "https://www.computerworld.dk/rss/all"
 }
 
+import feedparser
+import re
+
 async def fetch_rss(url: str) -> list[dict]:
-    """Fetch and parse RSS feed into a list of articles."""
+    """Fetch and parse RSS/Atom feed into a list of articles using feedparser and httpx."""
     articles = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "application/rss+xml, application/rdf+xml, application/atom+xml, application/xml, text/xml, */*"
+    }
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url)
+            resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
-                root = ET.fromstring(resp.text)
-                for item in root.findall(".//item"):
-                    title = item.findtext("title", "")
-                    link = item.findtext("link", "")
-                    description = item.findtext("description", "")
-                    # Clean up HTML in description (basic cleanup)
-                    import re
+                feed = feedparser.parse(resp.content)
+                for entry in feed.entries:
+                    title = getattr(entry, "title", "")
+                    link = getattr(entry, "link", "")
+                    description = getattr(entry, "description", getattr(entry, "summary", ""))
+                    
                     if description:
                         description = re.sub(r'<[^>]+>', ' ', description)
                         description = re.sub(r'\s+', ' ', description).strip()
@@ -37,19 +43,30 @@ async def fetch_rss(url: str) -> list[dict]:
                             "link": link,
                             "description": description or ""
                         })
+            else:
+                logger.warning(f"Failed to fetch RSS from {url}: HTTP {resp.status_code}")
     except Exception as e:
         logger.error(f"Failed to fetch RSS from {url}: {e}")
     return articles
 
-async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> dict:
+async def ask_groq_news(articles: list[dict], target_companies: list[str], used_terms: list[str]) -> dict:
     """
     Pass articles to Groq LLM to check for layoffs/restructuring
-    and to generate a Russian digest.
+    and to generate a Russian digest with an educational tech fact.
     """
     if not config.GROQ_API_KEY or not articles:
-        return {"restructuring_companies": [], "digest_ru": ""}
+        return {"restructuring_companies": [], "digest_ru": "", "used_term": ""}
 
-    # Limit to top 15 latest articles across both feeds, with 800-char descriptions for rich context
+    # Select an unused tech term
+    available_terms = [t for t in config.TECH_TERMS_POOL if t not in used_terms]
+    if not available_terms:
+        # If all exhausted, clear history and start over
+        available_terms = config.TECH_TERMS_POOL
+    
+    import random
+    selected_term = random.choice(available_terms)
+
+    # Limit to top 15 latest articles across feeds, with 800-char descriptions for rich context
     articles_snippet = ""
     for idx, art in enumerate(articles[:15]):
         desc = art['description'][:800] + "..." if len(art['description']) > 800 else art['description']
@@ -67,23 +84,30 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
 
     Task 2 (High-Substance Russian Tech Digest Post):
     1. Select the single MOST interesting, technical, or impactful IT news article from the list.
+       - Prioritize topics with a 75% focus on developers: Software Architecture, Code, Frameworks, Cloud/DevOps, Cybersecurity, AI tools for devs, Job market/Salaries.
+       - 25% focus on broader Tech Scene: Startups, IT policy, major infra.
+       - Ignore consumer gadget reviews or non-IT fluff.
     2. Write a clear, engaging, and SUBSTANTIAL Telegram post in Russian.
+    3. At the very end of the post, append an Educational Tech Fact about the term: "{selected_term}"
 
-    CRITICAL Requirements for Content Quality (DO NOT GENERATE EMPTY FLUFF):
-    - ALWAYS EXPLAIN THE SPECIFIC MECHANISM: If the news mentions a change or removal (e.g. "no more credit card numbers", "new security rule", "system shutdown"), YOU MUST EXPLICITLY STATE WHAT REPLACES IT AND HOW IT WORKS (e.g. Biometrics, Passkeys, Tokenization, Click to Pay, WebAuthn, OAuth, etc.).
-    - If the RSS summary snippet is brief, leverage your internal IT domain knowledge to provide the exact technological context and explanation of how this technology works.
-    - NEVER repeat the same point across paragraphs. Every sentence must deliver NEW facts, technical specifics, or concrete examples.
-    - Answer 3 core questions: 
-      1) What EXACTLY happened/was announced? 
-      2) How does the underlying technology or mechanism work (what replaces the old way)? 
-      3) What is the real-world impact or practical takeaway for developers/tech users?
+    CRITICAL Requirements for News Content:
+    - ALWAYS EXPLAIN THE SPECIFIC MECHANISM: Explain the tech behind the news.
+    - NEVER repeat the same point across paragraphs. Every sentence must deliver NEW facts.
+    - Answer 3 core questions: What happened? How does it work? What is the impact for developers/users?
+
+    CRITICAL Requirements for the Tech Fact Footer ("{selected_term}"):
+    - Explain simply for a non-tech person (plain words, no jargon without parens).
+    - If the term has enumerated parts (e.g., 7 OSI layers, SOLID principles), output a clean bullet list, one short line per point.
+    - Length MUST be exactly 400-600 characters (2-5 sentences + list).
+    - No generic intros like "Today we will talk about..." - start directly with the definition.
+    - Start the section with the exact markdown heading: 💡 **IT-Термин недели: {selected_term}**
 
     CRITICAL Telegram Formatting Rules:
     - NEVER use '#' or '##' Markdown headings! Telegram Markdown DOES NOT support '#'.
     - First line: *🚨 [Catchy Specific Headline]*
-    - Subheadings using bold text + emojis: e.g. *💡 Как это работает:* or *⚡ Главные изменения:*
+    - Subheadings using bold text + emojis: e.g. *💡 Как это работает:*
     - Bullet points using '• ' for specific technical details or advantages.
-    - End with a clean link line: 🔗 [Читать оригинал]([original_link])
+    - End the news section with a clean link line before the Tech Fact: 🔗 [Читать оригинал]([original_link])
     - Format strictly for Telegram using standard Markdown (v1): *bold*, _italic_, `code`, [link text](url).
 
     Articles:
@@ -92,7 +116,8 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     Return a JSON object EXACTLY like this:
     {{
         "restructuring_companies": ["list", "of", "strings"],
-        "digest_ru": "Your high-substance Russian news post here..."
+        "digest_ru": "Your complete Telegram post including the Tech Fact at the bottom...",
+        "used_term": "{selected_term}"
     }}
 
     Rules:
@@ -135,8 +160,9 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str]) -> di
     return {"restructuring_companies": [], "digest_ru": ""}
 
 async def process_news(state: dict) -> dict:
-    """Fetch news, analyze with Groq, and return restructuring companies and digest if new articles found."""
+    """Fetch news, analyze with Groq, and return restructuring companies, digest, and used term if new articles found."""
     seen_news = state.get("seen_news", [])
+    used_terms = state.get("used_terms", [])
     
     # Collect all target companies
     import json as json_lib
@@ -152,7 +178,7 @@ async def process_news(state: dict) -> dict:
     target_company_names = list(set(target_company_names)) # dedup
 
     all_articles = []
-    for source, url in RSS_FEEDS.items():
+    for source, url in config.RSS_FEEDS.items():
         articles = await fetch_rss(url)
         all_articles.extend(articles)
 
@@ -161,22 +187,23 @@ async def process_news(state: dict) -> dict:
     
     if not new_articles:
         logger.info("No new news articles to process.")
-        return {"restructuring_companies": [], "digest_ru": "", "new_links": []}
+        return {"restructuring_companies": [], "digest_ru": "", "new_links": [], "new_used_term": ""}
 
     logger.info(f"Found {len(new_articles)} new articles. Sending to Groq...")
     
-    analysis = await ask_groq_news(new_articles[:15], target_company_names)
+    analysis = await ask_groq_news(new_articles[:15], target_company_names, used_terms)
     
     digest_ru = analysis.get("digest_ru", "").strip()
+    new_used_term = analysis.get("used_term", "").strip()
     
     # Only mark these links as seen if Groq successfully generated a digest.
-    # Otherwise, we might skip them next time even if Groq failed due to rate limits.
     processed_links = [art["link"] for art in new_articles[:15]] if digest_ru else []
     
     return {
         "restructuring_companies": analysis.get("restructuring_companies", []),
         "digest_ru": digest_ru,
-        "new_links": processed_links
+        "new_links": processed_links,
+        "new_used_term": new_used_term
     }
 
 if __name__ == "__main__":

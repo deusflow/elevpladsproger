@@ -237,181 +237,196 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
                 logger.error(f"Error sending news digest to telegram: {e}")
 
 async def main():
-    logger.info("Starting scrape run...")
+    import argparse
+    parser = argparse.ArgumentParser(description="Elevplads & IT News Scraper")
+    parser.add_argument('--mode', choices=['jobs', 'news', 'all'], default='all', help="Execution mode")
+    args = parser.parse_args()
+
+    mode = args.mode
+    logger.info(f"Starting scrape run in mode: {mode}")
     
     state = await load_state()
-    old_jobs_list = state.get("jobs", [])
-    old_company_hashes = state.get("company_hashes", {})
-    
-    old_jobs = {item["job_id"]: item for item in old_jobs_list}
-    
-    now = datetime.now(timezone.utc)
-    for jid, jdata in old_jobs.items():
-        try:
-            discovered = datetime.fromisoformat(jdata.get("discovered_at", now.isoformat()))
-            if (now - discovered).days >= 30:
-                jdata["status"] = "expired"
-            else:
-                if "status" not in jdata:
-                    jdata["status"] = "active"
-        except ValueError:
-            jdata["status"] = "active"
-    
-    all_items = []
-
-    # API Scrapers
-    all_items.extend(await scrapers.scrape_thehub())
-    all_items.extend(await scrapers.scrape_elevplads())
-
-    # Browser Scrapers
-    async with async_playwright() as p:
-        browser_args = {
-            "headless": True
-        }
-        if PROXY_URL:
-            browser_args["proxy"] = {"server": PROXY_URL}
-            logger.info("Using configured PROXY_URL for Playwright.")
-            
-        browser = await p.chromium.launch(**browser_args)
-        USER_AGENTS = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0"
-        ]
-        try:
-            context = await browser.new_context(
-                user_agent=random.choice(USER_AGENTS),
-                locale="da-DK",
-                timezone_id="Europe/Copenhagen",
-                viewport={'width': 1920, 'height': 1080}
-            )
-            # Helper to run standard scrapers
-            async def run_scraper(scraper_func, context):
-                page = await context.new_page()
-                await stealth_async(page)
-                try:
-                    return await scraper_func(page)
-                finally:
-                    await page.close()
-
-            # Dynamic discovery on Proff (run once a week, or on empty state)
-            last_proff_scrape = state.get("last_proff_scrape")
-            now_dt = datetime.now(timezone.utc)
-            if not last_proff_scrape or (now_dt - datetime.fromisoformat(last_proff_scrape)).days >= 7:
-                logger.info("Running weekly dynamic company discovery via Proff.dk...")
-                dynamic_companies = await proff_scraper.discover_it_companies(context)
-                if dynamic_companies:
-                    existing_dynamic = state.get("dynamic_companies", [])
-                    existing_names = {c["name"].lower() for c in existing_dynamic}
-                    for dc in dynamic_companies:
-                        if dc["name"].lower() not in existing_names:
-                            existing_dynamic.append(dc)
-                    state["dynamic_companies"] = existing_dynamic
-                    state["last_proff_scrape"] = now_dt.isoformat()
-                    await save_state(state)
-            
-            dynamic_companies = state.get("dynamic_companies", [])
-
-            # Run all scrapers in parallel
-            tasks = [
-                run_scraper(scrapers.scrape_laerepladsen, context),
-                run_scraper(scrapers.scrape_jobnet, context),
-                run_scraper(scrapers.scrape_jobindex, context),
-                run_scraper(scrapers.scrape_itjobbank, context),
-                company_scrapers.scrape_custom_companies(context, dynamic_companies)
-            ]
-            
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for res in results:
-                if isinstance(res, Exception):
-                    logger.error(f"Scraper failed with exception: {res}")
-                elif isinstance(res, list):
-                    all_items.extend(res)
-        finally:
-            await browser.close()
-
-    # Process items (Jobs vs Hashes)
-    existing_ids = {jid for jid, j in old_jobs.items()}
-    new_jobs = []
-    changed_companies = []
-    new_company_hashes = old_company_hashes.copy()
-    
-    # Track seen (company, title) pairs to deduplicate across sources
-    seen_titles = set()
-    for jdata in old_jobs.values():
-        key = (jdata.get("company", "").lower().strip(), jdata.get("title", "").lower().strip())
-        seen_titles.add(key)
-    
-    for item in all_items:
-        if item.get("type") == "hash":
-            c_name = item["company"]
-            c_hash = item["hash"]
-            old_hash = old_company_hashes.get(c_name)
-            # If hash changed (and we had a valid MD5 old hash to compare to)
-            # Avoid false alerts if old_hash was a process-randomized integer hash
-            if old_hash and str(old_hash) != str(c_hash) and not str(old_hash).lstrip('-').isdigit():
-                if not item.get("llm_verified", False):
-                    changed_companies.append(item)
-                else:
-                    logger.info(f"Structure changed for {c_name}, but LLM verified 0 jobs. Updating hash silently.")
-                
-            new_company_hashes[c_name] = str(c_hash)
-        else:
-            dedup_key = (item.get("company", "").lower().strip(), item.get("title", "").lower().strip())
-            if item["job_id"] not in existing_ids and dedup_key not in seen_titles:
-                item["discovered_at"] = datetime.now(timezone.utc).isoformat()
-                new_jobs.append(item)
-                existing_ids.add(item["job_id"])
-                seen_titles.add(dedup_key)
-
-    logger.info(f"Discovered {len(new_jobs)} new jobs. {len(changed_companies)} companies changed structure.")
-    
-    if new_jobs:
-        import ai_scorer
-        await ai_scorer.enrich_jobs_with_ai(new_jobs)
-        
-    import cycle_predictor
-    cycle_alerts = cycle_predictor.analyze_and_predict(state)
-    
-    import news_monitor
-    news_result = await news_monitor.process_news(state)
-    news_digest = str(news_result.get("digest_ru", "")).strip()
-    restructuring_companies = news_result.get("restructuring_companies", [])
-    new_links = news_result.get("new_links", [])
-    
-    if new_links:
-        state_updated = True
-        state["seen_news"] = state.get("seen_news", []) + new_links
-        # Keep only the last 200 seen news links to avoid unbounded growth
-        state["seen_news"] = state["seen_news"][-200:]
-        if restructuring_companies:
-            state["restructuring_companies"] = list(set(state.get("restructuring_companies", []) + restructuring_companies))
-            
-    # Also pass historical restructuring companies to the notification logic just in case
-    active_restructuring = state.get("restructuring_companies", [])
-    
-    if cycle_alerts:
-        logger.info(f"Generated {len(cycle_alerts)} cycle prediction alerts.")
-        state_updated = True
-
-    await notify_telegram(new_jobs, changed_companies, cycle_alerts, news_digest, active_restructuring)
-    
     state_updated = False
-    # Always save state to update expiration statuses even if no new jobs
-    for nj in new_jobs:
-        nj["status"] = "active"
-        old_jobs[nj["job_id"]] = nj
-    state["jobs"] = list(old_jobs.values())
-    state_updated = True
+    
+    if mode in ['jobs', 'all']:
+        old_jobs_list = state.get("jobs", [])
+        old_company_hashes = state.get("company_hashes", {})
         
-    if new_company_hashes != old_company_hashes:
-        state["company_hashes"] = new_company_hashes
+        old_jobs = {item["job_id"]: item for item in old_jobs_list}
+        
+        now = datetime.now(timezone.utc)
+        for jid, jdata in old_jobs.items():
+            try:
+                discovered = datetime.fromisoformat(jdata.get("discovered_at", now.isoformat()))
+                if (now - discovered).days >= 30:
+                    jdata["status"] = "expired"
+                else:
+                    if "status" not in jdata:
+                        jdata["status"] = "active"
+            except ValueError:
+                jdata["status"] = "active"
+        
+        all_items = []
+
+        # API Scrapers
+        all_items.extend(await scrapers.scrape_thehub())
+        all_items.extend(await scrapers.scrape_elevplads())
+
+        # Browser Scrapers
+        async with async_playwright() as p:
+            browser_args = {
+                "headless": True
+            }
+            if PROXY_URL:
+                browser_args["proxy"] = {"server": PROXY_URL}
+                logger.info("Using configured PROXY_URL for Playwright.")
+                
+            browser = await p.chromium.launch(**browser_args)
+            USER_AGENTS = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0"
+            ]
+            try:
+                context = await browser.new_context(
+                    user_agent=random.choice(USER_AGENTS),
+                    locale="da-DK",
+                    timezone_id="Europe/Copenhagen",
+                    viewport={'width': 1920, 'height': 1080}
+                )
+                # Helper to run standard scrapers
+                async def run_scraper(scraper_func, context):
+                    page = await context.new_page()
+                    await stealth_async(page)
+                    try:
+                        return await scraper_func(page)
+                    finally:
+                        await page.close()
+
+                # Dynamic discovery on Proff (run once a week, or on empty state)
+                last_proff_scrape = state.get("last_proff_scrape")
+                now_dt = datetime.now(timezone.utc)
+                if not last_proff_scrape or (now_dt - datetime.fromisoformat(last_proff_scrape)).days >= 7:
+                    logger.info("Running weekly dynamic company discovery via Proff.dk...")
+                    dynamic_companies = await proff_scraper.discover_it_companies(context)
+                    if dynamic_companies:
+                        existing_dynamic = state.get("dynamic_companies", [])
+                        existing_names = {c["name"].lower() for c in existing_dynamic}
+                        for dc in dynamic_companies:
+                            if dc["name"].lower() not in existing_names:
+                                existing_dynamic.append(dc)
+                        state["dynamic_companies"] = existing_dynamic
+                        state["last_proff_scrape"] = now_dt.isoformat()
+                        await save_state(state)
+                
+                dynamic_companies = state.get("dynamic_companies", [])
+
+                # Run all scrapers in parallel
+                tasks = [
+                    run_scraper(scrapers.scrape_laerepladsen, context),
+                    run_scraper(scrapers.scrape_jobnet, context),
+                    run_scraper(scrapers.scrape_jobindex, context),
+                    run_scraper(scrapers.scrape_itjobbank, context),
+                    company_scrapers.scrape_custom_companies(context, dynamic_companies)
+                ]
+                
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                for res in results:
+                    if isinstance(res, Exception):
+                        logger.error(f"Scraper failed with exception: {res}")
+                    elif isinstance(res, list):
+                        all_items.extend(res)
+            finally:
+                await browser.close()
+
+        # Process items (Jobs vs Hashes)
+        existing_ids = {jid for jid, j in old_jobs.items()}
+        new_jobs = []
+        changed_companies = []
+        new_company_hashes = old_company_hashes.copy()
+        
+        # Track seen (company, title) pairs to deduplicate across sources
+        seen_titles = set()
+        for jdata in old_jobs.values():
+            key = (jdata.get("company", "").lower().strip(), jdata.get("title", "").lower().strip())
+            seen_titles.add(key)
+        
+        for item in all_items:
+            if item.get("type") == "hash":
+                c_name = item["company"]
+                c_hash = item["hash"]
+                old_hash = old_company_hashes.get(c_name)
+                # If hash changed (and we had a valid MD5 old hash to compare to)
+                # Avoid false alerts if old_hash was a process-randomized integer hash
+                if old_hash and str(old_hash) != str(c_hash) and not str(old_hash).lstrip('-').isdigit():
+                    if not item.get("llm_verified", False):
+                        changed_companies.append(item)
+                    else:
+                        logger.info(f"Structure changed for {c_name}, but LLM verified 0 jobs. Updating hash silently.")
+                    
+                new_company_hashes[c_name] = str(c_hash)
+            else:
+                dedup_key = (item.get("company", "").lower().strip(), item.get("title", "").lower().strip())
+                if item["job_id"] not in existing_ids and dedup_key not in seen_titles:
+                    item["discovered_at"] = datetime.now(timezone.utc).isoformat()
+                    new_jobs.append(item)
+                    existing_ids.add(item["job_id"])
+                    seen_titles.add(dedup_key)
+
+        logger.info(f"Discovered {len(new_jobs)} new jobs. {len(changed_companies)} companies changed structure.")
+        
+        if new_jobs:
+            import ai_scorer
+            await ai_scorer.enrich_jobs_with_ai(new_jobs)
+            
+        import cycle_predictor
+        cycle_alerts = cycle_predictor.analyze_and_predict(state)
+        
+        if cycle_alerts:
+            logger.info(f"Generated {len(cycle_alerts)} cycle prediction alerts.")
+            state_updated = True
+
+        active_restructuring = state.get("restructuring_companies", [])
+        await notify_telegram(new_jobs, changed_companies, cycle_alerts, "", active_restructuring)
+        
+        # Always save state to update expiration statuses even if no new jobs
+        for nj in new_jobs:
+            nj["status"] = "active"
+            old_jobs[nj["job_id"]] = nj
+        state["jobs"] = list(old_jobs.values())
         state_updated = True
+            
+        if new_company_hashes != old_company_hashes:
+            state["company_hashes"] = new_company_hashes
+            state_updated = True
+
+    if mode in ['news', 'all']:
+        import news_monitor
+        news_result = await news_monitor.process_news(state)
+        news_digest = str(news_result.get("digest_ru", "")).strip()
+        restructuring_companies = news_result.get("restructuring_companies", [])
+        new_links = news_result.get("new_links", [])
+        new_used_term = news_result.get("new_used_term", "")
         
-    if state_updated or not old_jobs_list:
-        # Also save if old_jobs_list is empty to initialize DB
+        if new_links:
+            state_updated = True
+            state["seen_news"] = state.get("seen_news", []) + new_links
+            # Keep only the last 200 seen news links to avoid unbounded growth
+            state["seen_news"] = state["seen_news"][-200:]
+            if restructuring_companies:
+                state["restructuring_companies"] = list(set(state.get("restructuring_companies", []) + restructuring_companies))
+        
+        if new_used_term:
+            state_updated = True
+            state["used_terms"] = state.get("used_terms", []) + [new_used_term]
+
+        active_restructuring = state.get("restructuring_companies", [])
+        if news_digest:
+            await notify_telegram([], [], [], news_digest, active_restructuring)
+            
+    if state_updated:
         await save_state(state)
 
 if __name__ == "__main__":
