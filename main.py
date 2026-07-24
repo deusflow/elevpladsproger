@@ -411,6 +411,9 @@ async def main():
         new_links = news_result.get("new_links", [])
         new_used_terms = news_result.get("new_used_terms", [])
         
+        import time
+        now = time.time()
+
         if new_links:
             state_updated = True
             state["seen_news"] = state.get("seen_news", []) + new_links
@@ -423,6 +426,37 @@ async def main():
             state_updated = True
             state["used_terms"] = state.get("used_terms", []) + new_used_terms
             state["used_terms"] = state["used_terms"][-50:] # prevent infinite growth
+
+        # 1. Feed Health-Check Alerts
+        feed_failures = state.get("feed_failures", {})
+        notified_feed_failures = state.get("notified_feed_failures", {})
+        for source, count in feed_failures.items():
+            if count >= 3 and not notified_feed_failures.get(source):
+                alert_msg = f"⚠️ *Сбой RSS фида*\nИсточник `{source}` не отвечает уже 3 запуска подряд."
+                await notify_telegram([], [], [], alert_msg, [])
+                notified_feed_failures[source] = True
+                state_updated = True
+            elif count == 0 and notified_feed_failures.get(source):
+                alert_msg = f"✅ *RSS фид восстановился*\nИсточник `{source}` снова работает."
+                await notify_telegram([], [], [], alert_msg, [])
+                notified_feed_failures[source] = False
+                state_updated = True
+        if "notified_feed_failures" not in state or state["notified_feed_failures"] != notified_feed_failures:
+            state["notified_feed_failures"] = notified_feed_failures
+            state_updated = True
+
+        # 2. Layoffs Alerts Routing (out-of-queue)
+        recent_layoff_alerts = state.get("recent_layoff_alerts", {})
+        for comp in restructuring_companies:
+            last_alerted = recent_layoff_alerts.get(comp, 0)
+            if now - last_alerted > 7 * 24 * 3600: # 7 days deduplication
+                alert_msg = f"🚨 *ВНИМАНИЕ: СОКРАЩЕНИЯ*\nЗамечены новости о сокращениях/реструктуризации в компании *{comp}*!"
+                await notify_telegram([], [], [], alert_msg, [])
+                recent_layoff_alerts[comp] = now
+                state_updated = True
+        if "recent_layoff_alerts" not in state or state["recent_layoff_alerts"] != recent_layoff_alerts:
+            state["recent_layoff_alerts"] = recent_layoff_alerts
+            state_updated = True
 
         active_restructuring = state.get("restructuring_companies", [])
         for digest in digests_ru:

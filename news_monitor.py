@@ -12,8 +12,15 @@ import feedparser
 import re
 import time
 
-async def fetch_rss(url: str) -> list[dict]:
-    """Fetch and parse RSS/Atom feed into a list of articles using feedparser and httpx."""
+def jaccard_similarity(s1: str, s2: str) -> float:
+    set1 = set(re.findall(r'\w+', s1.lower()))
+    set2 = set(re.findall(r'\w+', s2.lower()))
+    if not set1 or not set2:
+        return 0.0
+    return len(set1.intersection(set2)) / len(set1.union(set2))
+
+async def fetch_rss(url: str) -> tuple[list[dict], bool]:
+    """Fetch and parse RSS/Atom feed into a list of articles using feedparser and httpx. Returns (articles, success_flag)."""
     articles = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -42,11 +49,45 @@ async def fetch_rss(url: str) -> list[dict]:
                             "description": description or "",
                             "timestamp": timestamp
                         })
+                return articles, True
             else:
                 logger.warning(f"Failed to fetch RSS from {url}: HTTP {resp.status_code}")
+                return [], False
     except Exception as e:
         logger.error(f"Failed to fetch RSS from {url}: {e}")
-    return articles
+        return [], False
+
+async def autograde_digest(digest_ru: str, snippets: str) -> bool:
+    if not config.GEMINI_API_KEY:
+        return True # Skip if no API key
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={config.GEMINI_API_KEY}"
+    prompt = f"Source text:\n{snippets}\n\nGenerated text:\n{digest_ru}\n\nDoes the generated text contain any specific numbers, metrics, product versions, or proper names that do NOT exist in the source text? If yes, reply 'FAIL'. If no, reply 'OK'. Only reply with 'FAIL' or 'OK'."
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload)
+            if resp.status_code == 200:
+                res = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                if "FAIL" in res.upper():
+                    return False
+    except Exception as e:
+        logger.warning(f"Autograder error: {e}")
+    return True
+
+def validate_format(digest_ru: str) -> bool:
+    if not digest_ru:
+        return True
+    for emoji in ["📰", "📌", "⚙️", "⚡", "🔗"]: # Removed 💡 since it is at the very end and might be skipped in fallback? No, it's always appended.
+        if emoji not in digest_ru:
+            logger.warning(f"Validation failed: missing emoji {emoji}")
+            return False
+    if "▫️ ▫️ ▫️" not in digest_ru:
+        logger.warning("Validation failed: missing separator ▫️ ▫️ ▫️")
+        return False
+    if re.search(r'(?m)^[ \t]+', digest_ru):
+        logger.warning("Validation failed: leading whitespace detected")
+        return False
+    return True
 
 async def ask_llm_news(articles: list[dict], target_companies: list[str], used_terms: list[str]) -> dict:
     """
@@ -251,9 +292,28 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     target_company_names = list(set(target_company_names)) # dedup
 
     all_articles = []
+    feed_failures = state.get("feed_failures", {})
+
     for source, url in config.RSS_FEEDS.items():
-        articles = await fetch_rss(url)
-        all_articles.extend(articles)
+        articles, success = await fetch_rss(url)
+        if not success:
+            feed_failures[source] = feed_failures.get(source, 0) + 1
+            if feed_failures[source] >= 3:
+                logger.error(f"Feed {source} has failed {feed_failures[source]} times consecutively.")
+        else:
+            feed_failures[source] = 0
+
+        # Semantic Deduplication across feeds
+        for art in articles:
+            is_dupe = False
+            for existing in all_articles:
+                if jaccard_similarity(art["title"], existing["title"]) > 0.6:
+                    is_dupe = True
+                    break
+            if not is_dupe:
+                all_articles.append(art)
+                
+    state["feed_failures"] = feed_failures
 
     # Sort all articles by timestamp descending (newest first)
     all_articles.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
@@ -294,8 +354,37 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     restructuring_comps = []
 
     for batch in batches:
-        analysis = await ask_llm_news(batch, target_company_names, used_terms)
-        
+        analysis = {}
+        for attempt in range(2):
+            analysis = await ask_llm_news(batch, target_company_names, used_terms)
+            digest_ru = analysis.get("digest_ru", "").strip()
+            if not digest_ru:
+                break
+                
+            if not validate_format(digest_ru):
+                logger.warning(f"Format validation failed on attempt {attempt+1}")
+                continue
+                
+            # Reconstruct snippets for autograder
+            articles_snippet = ""
+            for idx, art in enumerate(batch):
+                desc = art['description'][:800] + "..." if len(art['description']) > 800 else art['description']
+                articles_snippet += f"[{idx+1}] Title: {art['title']}\nSummary: {desc}\nLink: {art['link']}\n\n"
+
+            if not await autograde_digest(digest_ru, articles_snippet):
+                logger.warning(f"Autograder rejected digest on attempt {attempt+1} due to hallucinations")
+                continue
+                
+            break # Valid
+        else:
+            logger.error("LLM validation failed after 2 attempts. Using fallback digest.")
+            digest_ru = "📰 *Топ Новости IT*\n\n"
+            for art in batch[:3]:
+                digest_ru += f"📌 *{art['title']}*\n🔗 [Читать источник]({art['link']})\n\n"
+            digest_ru += "▫️ ▫️ ▫️\n💡 *Сбой ИИ*: Сводка временно упрощена из-за ошибок генерации."
+            analysis["digest_ru"] = digest_ru
+            analysis["used_term"] = ""
+            
         digest_ru = analysis.get("digest_ru", "").strip()
         new_used_term = analysis.get("used_term", "").strip()
         
@@ -304,7 +393,7 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
             processed_links.extend([art["link"] for art in batch])
             if new_used_term:
                 new_used_terms.append(new_used_term)
-                used_terms.append(new_used_term) # update for next batch
+                used_terms.append(new_used_term)
             restructuring_comps.extend(analysis.get("restructuring_companies", []))
 
     # Any new articles that were NOT processed (because they exceeded the 30 limit)
