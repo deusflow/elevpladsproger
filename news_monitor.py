@@ -219,7 +219,15 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
                             res_json = resp.json()
                             text_content = res_json["candidates"][0]["content"]["parts"][0]["text"]
                             parsed = json.loads(text_content)
-                            logger.info(f"Successfully generated digest via Gemini API model ({g_model})")
+                            digest_ru = parsed.get("digest_ru", "").strip()
+                            
+                            if not validate_format(digest_ru):
+                                raise Exception(f"Format validation failed for {g_model}")
+                                
+                            if not await autograde_digest(digest_ru, articles_snippet):
+                                raise Exception(f"Autograder rejected digest for {g_model} due to hallucinations")
+                                
+                            logger.info(f"Successfully generated and validated digest via Gemini API model ({g_model})")
                             return parsed
             except Exception as e:
                 logger.warning(f"Gemini API exception with model {g_model}: {e}")
@@ -263,8 +271,17 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
                                 break 
 
                             content = resp.json()["choices"][0]["message"]["content"]
-                            logger.info(f"Successfully generated digest via Groq fallback ({model})")
-                            return json.loads(content)
+                            parsed = json.loads(content)
+                            digest_ru = parsed.get("digest_ru", "").strip()
+                            
+                            if not validate_format(digest_ru):
+                                raise Exception(f"Format validation failed for {model}")
+                                
+                            if not await autograde_digest(digest_ru, articles_snippet):
+                                raise Exception(f"Autograder rejected digest for {model} due to hallucinations")
+                                
+                            logger.info(f"Successfully generated and validated digest via Groq fallback ({model})")
+                            return parsed
             except Exception as e:
                 logger.error(f"Groq API exception during news analysis with model {model}: {e}")
 
@@ -351,30 +368,11 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     restructuring_comps = []
 
     for batch in batches:
-        analysis = {}
-        for attempt in range(2):
-            analysis = await ask_llm_news(batch, target_company_names, used_terms)
-            digest_ru = analysis.get("digest_ru", "").strip()
-            if not digest_ru:
-                break
-                
-            if not validate_format(digest_ru):
-                logger.warning(f"Format validation failed on attempt {attempt+1}")
-                continue
-                
-            # Reconstruct snippets for autograder
-            articles_snippet = ""
-            for idx, art in enumerate(batch):
-                desc = art['description'][:800] + "..." if len(art['description']) > 800 else art['description']
-                articles_snippet += f"[{idx+1}] Title: {art['title']}\nSummary: {desc}\nLink: {art['link']}\n\n"
-
-            if not await autograde_digest(digest_ru, articles_snippet):
-                logger.warning(f"Autograder rejected digest on attempt {attempt+1} due to hallucinations")
-                continue
-                
-            break # Valid
-        else:
-            logger.warning("LLM validation failed after 2 attempts. Using fallback digest.")
+        analysis = await ask_llm_news(batch, target_company_names, used_terms)
+        digest_ru = analysis.get("digest_ru", "").strip()
+        
+        if not digest_ru:
+            logger.warning("LLM generation failed for all models. Using fallback digest.")
             digest_ru = "📰 *Топ Новости IT*\n\n"
             for art in batch[:3]:
                 digest_ru += f"📌 *{art['title']}*\n🔗 [Читать источник]({art['link']})\n\n"
