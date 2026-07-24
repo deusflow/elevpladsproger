@@ -6,7 +6,7 @@ import urllib.parse
 logger = logging.getLogger("elevplads_scraper")
 
 # Cache to avoid hitting the API multiple times for the same company
-ACCREDITATION_CACHE = {}
+ACCREDITATION_CACHE: dict[str, bool] = {}
 
 async def check_accreditation(company_name: str) -> bool:
     """

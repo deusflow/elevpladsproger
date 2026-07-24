@@ -1,4 +1,5 @@
 import asyncio
+from typing import Optional, Any
 import json
 import os
 import httpx
@@ -16,11 +17,11 @@ import config
 
 FALLBACK_FILE = "jobs_db_fallback.json"
 
-async def load_state() -> dict:
-    state = {"jobs": [], "company_hashes": {}}
+async def load_state() -> dict[str, Any]:
+    state: dict[str, Any] = {"jobs": [], "company_hashes": {}}
     
     # Check if we have an un-synced fallback file from a previous failed run
-    fallback_state = None
+    fallback_state: Optional[dict[str, Any]] = None
     if os.path.exists(FALLBACK_FILE):
         try:
             with open(FALLBACK_FILE, "r", encoding="utf-8") as f:
@@ -53,10 +54,19 @@ async def load_state() -> dict:
                         if fallback_state:
                             logger.info("Merging local fallback state into Supabase state...")
                             existing_job_ids = {j["job_id"] for j in state.get("jobs", [])}
-                            for fj in fallback_state.get("jobs", []):
-                                if fj.get("job_id") not in existing_job_ids:
-                                    state.setdefault("jobs", []).append(fj)
-                            state.get("company_hashes", {}).update(fallback_state.get("company_hashes", {}))
+                            if "jobs" not in state:
+                                state["jobs"] = []
+                            jobs_list = state["jobs"]
+                            if isinstance(jobs_list, list):
+                                for fj in fallback_state.get("jobs", []):
+                                    if fj.get("job_id") not in existing_job_ids:
+                                        jobs_list.append(fj)
+                                        
+                            if "company_hashes" not in state:
+                                state["company_hashes"] = {}
+                            hashes = state["company_hashes"]
+                            if isinstance(hashes, dict):
+                                hashes.update(fallback_state.get("company_hashes", {}))
                             
                         return state
                     else:
@@ -106,7 +116,7 @@ async def save_state(state: dict):
                         if os.path.exists(FALLBACK_FILE):
                             try:
                                 os.remove(FALLBACK_FILE)
-                            except Exception:
+                            except OSError:
                                 pass
                         return
                     else:
@@ -135,7 +145,7 @@ def escape_markdown_v2(text: str) -> str:
     escape_chars = r"_*[]()~`>#+-=|{}.!"
     return "".join(f"\\{c}" if c in escape_chars else c for c in text)
 
-async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: list[str] = None, news_digest: str = "", restructuring_companies: list[str] = None):
+async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: Optional[list[str]] = None, news_digest: str = "", restructuring_companies: Optional[list[str]] = None):
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
         logger.warning("Telegram configuration missing. Notification skipped.")
         return

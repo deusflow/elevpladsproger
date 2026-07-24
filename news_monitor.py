@@ -3,6 +3,7 @@ import xml.etree.ElementTree as ET
 import logging
 import json
 import asyncio
+from typing import Any
 from datetime import datetime
 import config
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
@@ -62,7 +63,7 @@ async def autograde_digest(digest_ru: str, snippets: str) -> bool:
         return True # Skip if no API key
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={config.GEMINI_API_KEY}"
     prompt = f"Source text:\n{snippets}\n\nGenerated text:\n{digest_ru}\n\nDoes the generated text invent any specific numbers, versions, or product names that are entirely absent from the source text? (Do not flag common industry terms, translations, or structural words). If it invents fake metrics/versions, reply 'FAIL'. Otherwise reply 'OK'. Only reply with 'FAIL' or 'OK'."
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    payload: dict[str, Any] = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, json=payload)
@@ -190,7 +191,7 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
         gemini_models = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
         for g_model in gemini_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
-            payload = {
+            payload: dict[str, Any] = {
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {
                     "responseMimeType": "application/json",
@@ -305,7 +306,7 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     target_company_names.extend([c["name"] for c in state.get("dynamic_companies", [])])
     target_company_names = list(set(target_company_names)) # dedup
 
-    all_articles = []
+    all_articles: list[dict[str, Any]] = []
     feed_failures = state.get("feed_failures", {})
 
     for source, url in config.RSS_FEEDS.items():

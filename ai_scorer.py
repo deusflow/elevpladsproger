@@ -3,13 +3,14 @@ import json
 import logging
 import re
 import config
+from typing import Any
 
 logger = logging.getLogger("elevplads_scraper")
 
 async def fetch_job_text(url: str) -> str:
     """Fetch job URL and extract text using regex, skipping JS/CSS."""
     try:
-        client_kwargs = {"timeout": 15.0, "follow_redirects": True}
+        client_kwargs: dict[str, Any] = {"timeout": 15.0, "follow_redirects": True}
         if config.PROXY_URL:
             client_kwargs["proxy"] = config.PROXY_URL
             

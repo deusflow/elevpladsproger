@@ -10,6 +10,7 @@ import config
 from scrapers import format_job, is_valid_job
 from tenacity import retry, stop_after_attempt, wait_fixed
 from playwright_stealth import stealth_async
+from typing import Optional
 
 logger = logging.getLogger("elevplads_scraper")
 
@@ -36,8 +37,8 @@ async def extract_links_from_frame(frame, base_url, found_jobs):
                     "title": f"Mulig stilling: {link['text']}",
                     "url": job_url
                 })
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Failed to extract links from frame: {e}")
         
     for child in frame.child_frames:
         await extract_links_from_frame(child, base_url, found_jobs)
@@ -130,7 +131,7 @@ async def _do_scrape_company(page: Page, url: str):
     await page.goto(url, wait_until="networkidle", timeout=30000)
     await page.wait_for_timeout(2000) # Give extra time for JS/Iframes to render
     
-    found_jobs = []
+    found_jobs: list[dict] = []
     await extract_links_from_frame(page.main_frame, url, found_jobs)
             
     # Target content area or fallback to main/article/body
@@ -227,8 +228,8 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
             
         return jobs
 
-async def scrape_custom_companies(context: BrowserContext, dynamic_companies: list[dict] = None) -> list[dict]:
-    jobs = []
+async def scrape_all_companies(context: BrowserContext, dynamic_companies: Optional[list[dict]] = None) -> list[dict]:
+    jobs: list[dict] = []
     try:
         with open("target_companies.json", "r", encoding="utf-8") as f:
             companies = json.load(f)

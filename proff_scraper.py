@@ -12,7 +12,8 @@ async def discover_it_companies(context: BrowserContext) -> list[dict]:
     """
     page = await context.new_page()
     await stealth_async(page)
-    discovered = []
+    from typing import Any
+    discovered: list[dict[str, Any]] = []
     
     try:
         # Example Proff search for IT companies in Region Midtjylland with >20 employees.
@@ -39,7 +40,8 @@ async def discover_it_companies(context: BrowserContext) -> list[dict]:
                             "url": "", # Website URL needs to be resolved from profile or DuckDuckGo
                             "proff_url": f"https://www.proff.dk{href}" if href.startswith("/") else href
                         })
-            except Exception:
+            except Exception as pe:
+                logger.debug(f"Failed parsing proff element: {pe}")
                 continue
                 
     except Exception as e:
