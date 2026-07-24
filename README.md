@@ -1,12 +1,12 @@
 # 🎯 Elevpladsproger (Denmark IT Apprenticeship Scraper)
 
-A highly advanced, AI-powered web scraper and automation tool designed to monitor IT apprenticeship (elevplads) openings in Denmark. It leverages **Groq API (Llama 3.3 70B)** and a **Stealth Anti-Detect Framework** to provide real-time, highly accurate, and bot-resistant job monitoring directly to your Telegram.
+A highly advanced, AI-powered web scraper and automation tool designed to monitor IT apprenticeship (elevplads) openings in Denmark. It leverages **Gemini 3.5 Flash** (with Groq/Llama 3 as fallback) and a **Stealth Anti-Detect Framework** to provide real-time, highly accurate, and bot-resistant job monitoring directly to your Telegram.
 
 ---
 
 ## ✨ Key Features
 
-### 🧠 AI-Powered Analysis (Groq Llama 3)
+### 🧠 AI-Powered Analysis (Gemini 3.5 Flash)
 - **AI Match Score**: Automatically evaluates new job postings based on target keywords (e.g., Datatekniker, IT-Elev). Sends a 0-100% match score, city, and a short Danish summary directly to Telegram.
 - **Hidden Elevplads Detector**: Uses LLM to read corporate career pages. It detects "hidden" or unsolicited apprenticeship announcements (e.g., "Send an email if you want to be an IT-apprentice") that aren't listed on standard job boards.
 
@@ -47,7 +47,8 @@ Add URLs to monitor in `target_companies.json`:
 You need the following secrets configured (in your `.env` file or GitHub Secrets):
 - `TELEGRAM_BOT_TOKEN`: Your Telegram Bot token.
 - `TELEGRAM_CHAT_ID`: Your personal Chat ID to receive alerts.
-- `GROQ_API_KEY`: API Key for Llama 3 analysis.
+- `GEMINI_API_KEY`: API Key for primary analysis (Gemini).
+- `GROQ_API_KEY`: (Optional) API Key for Groq fallback.
 - `SUPABASE_URL` & `SUPABASE_KEY`: For persistent, cross-run state storage.
 - `PROXY_URL`: (Optional) Residential proxy for unblocking hard WAFs.
 

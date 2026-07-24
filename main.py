@@ -406,26 +406,28 @@ async def main():
         import news_monitor
         force_post_env = os.getenv("FORCE_POST", "false").lower() == "true"
         news_result = await news_monitor.process_news(state, force_post=force_post_env)
-        news_digest = str(news_result.get("digest_ru", "")).strip()
+        digests_ru = news_result.get("digests_ru", [])
         restructuring_companies = news_result.get("restructuring_companies", [])
         new_links = news_result.get("new_links", [])
-        new_used_term = news_result.get("new_used_term", "")
+        new_used_terms = news_result.get("new_used_terms", [])
         
         if new_links:
             state_updated = True
             state["seen_news"] = state.get("seen_news", []) + new_links
-            # Keep only the last 200 seen news links to avoid unbounded growth
-            state["seen_news"] = state["seen_news"][-200:]
+            # Keep only the last 500 seen news links to avoid unbounded growth but still track backlogs
+            state["seen_news"] = state["seen_news"][-500:]
             if restructuring_companies:
                 state["restructuring_companies"] = list(set(state.get("restructuring_companies", []) + restructuring_companies))
         
-        if new_used_term:
+        if new_used_terms:
             state_updated = True
-            state["used_terms"] = state.get("used_terms", []) + [new_used_term]
+            state["used_terms"] = state.get("used_terms", []) + new_used_terms
+            state["used_terms"] = state["used_terms"][-50:] # prevent infinite growth
 
         active_restructuring = state.get("restructuring_companies", [])
-        if news_digest:
-            await notify_telegram([], [], [], news_digest, active_restructuring)
+        for digest in digests_ru:
+            if digest:
+                await notify_telegram([], [], [], digest, active_restructuring)
             
     if state_updated:
         await save_state(state)

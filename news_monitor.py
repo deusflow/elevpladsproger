@@ -8,13 +8,9 @@ import config
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
 logger = logging.getLogger("elevplads_scraper")
 
-RSS_FEEDS = {
-    "Version2": "https://www.version2.dk/rss",
-    "Computerworld": "https://www.computerworld.dk/rss/all"
-}
-
 import feedparser
 import re
+import time
 
 async def fetch_rss(url: str) -> list[dict]:
     """Fetch and parse RSS/Atom feed into a list of articles using feedparser and httpx."""
@@ -32,6 +28,8 @@ async def fetch_rss(url: str) -> list[dict]:
                     title = getattr(entry, "title", "")
                     link = getattr(entry, "link", "")
                     description = getattr(entry, "description", getattr(entry, "summary", ""))
+                    published = getattr(entry, "published_parsed", None)
+                    timestamp = time.mktime(published) if published else 0
                     
                     if description:
                         description = re.sub(r'<[^>]+>', ' ', description)
@@ -41,7 +39,8 @@ async def fetch_rss(url: str) -> list[dict]:
                         articles.append({
                             "title": title,
                             "link": link,
-                            "description": description or ""
+                            "description": description or "",
+                            "timestamp": timestamp
                         })
             else:
                 logger.warning(f"Failed to fetch RSS from {url}: HTTP {resp.status_code}")
@@ -49,12 +48,12 @@ async def fetch_rss(url: str) -> list[dict]:
         logger.error(f"Failed to fetch RSS from {url}: {e}")
     return articles
 
-async def ask_groq_news(articles: list[dict], target_companies: list[str], used_terms: list[str]) -> dict:
+async def ask_llm_news(articles: list[dict], target_companies: list[str], used_terms: list[str]) -> dict:
     """
-    Pass articles to Groq LLM to check for layoffs/restructuring
+    Pass articles to LLM to check for layoffs/restructuring
     and to generate a Russian digest with an educational tech fact.
     """
-    if not config.GROQ_API_KEY or not articles:
+    if (not config.GEMINI_API_KEY and not config.GROQ_API_KEY) or not articles:
         return {"restructuring_companies": [], "digest_ru": "", "used_term": ""}
 
     # Select an unused tech term
@@ -66,9 +65,9 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
     import random
     selected_term = random.choice(available_terms)
 
-    # Limit to top 15 latest articles across feeds, with 800-char descriptions for rich context
+    # Context string (articles are already sliced in batches before passing here)
     articles_snippet = ""
-    for idx, art in enumerate(articles[:15]):
+    for idx, art in enumerate(articles):
         desc = art['description'][:800] + "..." if len(art['description']) > 800 else art['description']
         articles_snippet += f"[{idx+1}] Title: {art['title']}\nSummary: {desc}\nLink: {art['link']}\n\n"
 
@@ -101,8 +100,8 @@ async def ask_groq_news(articles: list[dict], target_companies: list[str], used_
     - Keep all bold asterisks (*).
 
     CRITICAL CONTENT EXPANSION REQUIREMENTS:
-    - EXPAND WITH DOMAIN KNOWLEDGE: RSS snippets are often brief. You MUST use your extensive internal IT domain knowledge to expand on the topic and write real, detailed, high-value technical paragraphs for ⚙️ *Техническая суть:* and ⚡ *Почему это важно:*. 
-    - NEVER write generic one-liners. Explain the SPECIFIC tech, protocols, frameworks, or architectural impact!
+    - EXPAND WITH DOMAIN KNOWLEDGE: Explain the likely mechanism and architectural impact, but do NOT invent specific numbers, versions, or product names that are not present in the source text.
+    - NEVER write generic one-liners. Explain the SPECIFIC tech, protocols, frameworks, or architectural impact!ic one-liners. Explain the SPECIFIC tech, protocols, frameworks, or architectural impact!
 
     EXACT TELEGRAM TEMPLATE TO FOLLOW (copy the emojis and formatting EXACTLY):
     ```
@@ -256,6 +255,20 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         articles = await fetch_rss(url)
         all_articles.extend(articles)
 
+    # Sort all articles by timestamp descending (newest first)
+    all_articles.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+
+    # Cold start logic: if seen_news is completely empty and this is not a force_post,
+    # we just seed the seen_news with all current articles to prevent a massive spam wave on first run.
+    if len(seen_news) == 0 and len(all_articles) > 0 and not force_post:
+        logger.info("Cold start detected. Seeding seen_news with current articles and skipping LLM processing.")
+        return {
+            "restructuring_companies": [], 
+            "digests_ru": [], 
+            "new_links": [art["link"] for art in all_articles], 
+            "new_used_terms": []
+        }
+
     # Filter out seen articles based on link unless force_post is True
     if force_post:
         logger.info("force_post is True, skipping seen_news check.")
@@ -265,23 +278,46 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     
     if not new_articles:
         logger.info("No new news articles to process.")
-        return {"restructuring_companies": [], "digest_ru": "", "new_links": [], "new_used_term": ""}
+        return {"restructuring_companies": [], "digests_ru": [], "new_links": [], "new_used_terms": []}
 
-    logger.info(f"Found {len(new_articles)} new articles. Sending to Groq...")
+    # Limit processing to max 30 articles (up to 2 digests) to avoid overloading the channel and LLM
+    articles_to_process = new_articles[:30]
+    logger.info(f"Found {len(new_articles)} new articles. Processing top {len(articles_to_process)} (Sending to LLM)...")
+
+    # Chunk into batches of 15
+    batch_size = 15
+    batches = [articles_to_process[i:i + batch_size] for i in range(0, len(articles_to_process), batch_size)]
     
-    analysis = await ask_groq_news(new_articles[:15], target_company_names, used_terms)
-    
-    digest_ru = analysis.get("digest_ru", "").strip()
-    new_used_term = analysis.get("used_term", "").strip()
-    
-    # Only mark these links as seen if Groq successfully generated a digest.
-    processed_links = [art["link"] for art in new_articles[:15]] if digest_ru else []
-    
+    digests_ru = []
+    processed_links = []
+    new_used_terms = []
+    restructuring_comps = []
+
+    for batch in batches:
+        analysis = await ask_llm_news(batch, target_company_names, used_terms)
+        
+        digest_ru = analysis.get("digest_ru", "").strip()
+        new_used_term = analysis.get("used_term", "").strip()
+        
+        if digest_ru:
+            digests_ru.append(digest_ru)
+            processed_links.extend([art["link"] for art in batch])
+            if new_used_term:
+                new_used_terms.append(new_used_term)
+                used_terms.append(new_used_term) # update for next batch
+            restructuring_comps.extend(analysis.get("restructuring_companies", []))
+
+    # Any new articles that were NOT processed (because they exceeded the 30 limit)
+    # should still be marked as seen so they don't clog up the backlog forever.
+    # However, if force_post is true, we don't necessarily want to mark everything as seen if we didn't process it.
+    if not force_post:
+        processed_links.extend([art["link"] for art in new_articles[30:]])
+
     return {
-        "restructuring_companies": analysis.get("restructuring_companies", []),
-        "digest_ru": digest_ru,
+        "restructuring_companies": list(set(restructuring_comps)),
+        "digests_ru": digests_ru,
         "new_links": processed_links,
-        "new_used_term": new_used_term
+        "new_used_terms": new_used_terms
     }
 
 if __name__ == "__main__":
@@ -292,6 +328,7 @@ if __name__ == "__main__":
         import os
         load_dotenv()
         config.GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+        config.GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
         res = await process_news({"seen_news": []})
         print(json.dumps(res, indent=2, ensure_ascii=False))
     
