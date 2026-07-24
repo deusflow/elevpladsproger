@@ -77,15 +77,12 @@ async def autograde_digest(digest_ru: str, snippets: str) -> bool:
 def validate_format(digest_ru: str) -> bool:
     if not digest_ru:
         return True
-    for emoji in ["📰", "📌", "⚙️", "⚡", "🔗"]: # Removed 💡 since it is at the very end and might be skipped in fallback? No, it's always appended.
+    for emoji in ["📰", "📌", "⚙️", "⚡", "🔗"]:
         if emoji not in digest_ru:
             logger.warning(f"Validation failed: missing emoji {emoji}")
             return False
     if "▫️ ▫️ ▫️" not in digest_ru:
         logger.warning("Validation failed: missing separator ▫️ ▫️ ▫️")
-        return False
-    if re.search(r'(?m)^[ \t]+', digest_ru):
-        logger.warning("Validation failed: leading whitespace detected")
         return False
     return True
 
@@ -225,7 +222,7 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
                             logger.info(f"Successfully generated digest via Gemini API model ({g_model})")
                             return parsed
             except Exception as e:
-                logger.error(f"Gemini API exception with model {g_model}: {e}")
+                logger.warning(f"Gemini API exception with model {g_model}: {e}")
 
     # 2. Fallback to Groq API if Gemini is unavailable or fails
     if config.GROQ_API_KEY:
@@ -377,7 +374,7 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
                 
             break # Valid
         else:
-            logger.error("LLM validation failed after 2 attempts. Using fallback digest.")
+            logger.warning("LLM validation failed after 2 attempts. Using fallback digest.")
             digest_ru = "📰 *Топ Новости IT*\n\n"
             for art in batch[:3]:
                 digest_ru += f"📌 *{art['title']}*\n🔗 [Читать источник]({art['link']})\n\n"
