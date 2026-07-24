@@ -61,7 +61,7 @@ async def autograde_digest(digest_ru: str, snippets: str) -> bool:
     if not config.GEMINI_API_KEY:
         return True # Skip if no API key
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={config.GEMINI_API_KEY}"
-    prompt = f"Source text:\n{snippets}\n\nGenerated text:\n{digest_ru}\n\nDoes the generated text contain any specific numbers, metrics, product versions, or proper names that do NOT exist in the source text? If yes, reply 'FAIL'. If no, reply 'OK'. Only reply with 'FAIL' or 'OK'."
+    prompt = f"Source text:\n{snippets}\n\nGenerated text:\n{digest_ru}\n\nDoes the generated text invent any specific numbers, versions, or product names that are entirely absent from the source text? (Do not flag common industry terms, translations, or structural words). If it invents fake metrics/versions, reply 'FAIL'. Otherwise reply 'OK'. Only reply with 'FAIL' or 'OK'."
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
