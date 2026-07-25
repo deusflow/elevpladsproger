@@ -389,12 +389,12 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         logger.info("No new news articles to process.")
         return {"restructuring_companies": [], "digests_ru": [], "new_links": [], "new_used_terms": []}
 
-    # Limit processing to max 30 articles (up to 2 digests) to avoid overloading the channel and LLM
-    articles_to_process = new_articles[:30]
+    # Limit processing to max 21 articles (up to 3 digests) to avoid overloading the LLM context window (TPM limits)
+    articles_to_process = new_articles[:21]
     logger.info(f"Found {len(new_articles)} new articles. Processing top {len(articles_to_process)} (Sending to LLM)...")
 
-    # Chunk into batches of 15
-    batch_size = 15
+    # Chunk into batches of 7 to keep prompt sizes small (reduces hallucinations and token limits)
+    batch_size = 7
     batches = [articles_to_process[i:i + batch_size] for i in range(0, len(articles_to_process), batch_size)]
     
     digests_ru = []
@@ -426,16 +426,16 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
                 used_terms.append(new_used_term)
             restructuring_comps.extend(analysis.get("restructuring_companies", []))
             
-        # Rate Limiting: Sleep to avoid hitting Gemini/Groq free tier limits (RPM)
+        # Rate Limiting: Sleep to avoid hitting Gemini/Groq free tier limits (RPM and TPM)
         if len(batches) > 1 and batch != batches[-1]:
-            logger.info("Sleeping for 10 seconds to respect LLM free-tier rate limits...")
-            await asyncio.sleep(10)
+            logger.info("Sleeping for 15 seconds to respect LLM free-tier rate limits and allow token buckets to refill...")
+            await asyncio.sleep(15)
 
-    # Any new articles that were NOT processed (because they exceeded the 30 limit)
+    # Any new articles that were NOT processed (because they exceeded the limit)
     # should still be marked as seen so they don't clog up the backlog forever.
     # However, if force_post is true, we don't necessarily want to mark everything as seen if we didn't process it.
     if not force_post:
-        for art in new_articles[30:]:
+        for art in new_articles[21:]:
             seen_news.append({"link": art["link"], "title": art["title"], "timestamp": art.get("timestamp", current_time)})
 
     # Also append processed links
