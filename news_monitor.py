@@ -78,10 +78,16 @@ async def autograde_digest(digest_ru: str, snippets: str) -> bool:
 def validate_format(digest_ru: str) -> bool:
     if not digest_ru:
         return True
-    for emoji in ["📰", "📌", "⚙️", "⚡", "🔗"]:
+    # Headline emoji must be one of these three
+    if not any(e in digest_ru for e in ["📰", "🎓", "⚖️"]):
+        logger.warning(f"Validation failed: missing headline emoji (📰, 🎓, or ⚖️)")
+        return False
+        
+    for emoji in ["📌", "⚙️", "⚡", "🔗"]:
         if emoji not in digest_ru:
             logger.warning(f"Validation failed: missing emoji {emoji}")
             return False
+            
     if "▫️ ▫️ ▫️" not in digest_ru:
         logger.warning("Validation failed: missing separator ▫️ ▫️ ▫️")
         return False
@@ -121,9 +127,9 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
     Companies: {companies_str}
 
     Task 2 (High-Substance Russian Tech Digest Post):
-    1. Select the single MOST interesting, technical, or impactful IT news article from the list.
-       - Prioritize topics with a 75% focus on developers: Software Architecture, Code, Frameworks, Cloud/DevOps, Cybersecurity, AI tools for devs, Job market/Salaries.
-       - 25% focus on broader Tech Scene: Startups, IT policy, major infra.
+    1. Select the single MOST interesting, technical, or impactful news article from the list.
+       - EXTREME PRIORITY: If an article is about IT Education in Denmark (EUD, EUX, SU, IT-supporter, Datatekniker, admissions), or IT Apprenticeship Laws (elevplads rules, AUB subsidies, overenskomst, elevløn, unions), you MUST prioritize it over general tech news!
+       - Otherwise, prioritize topics with a 75% focus on developers (Architecture, Code, DevOps, Cybersecurity) and 25% on the tech scene (Startups, Tech Science, Infra).
        - Ignore consumer gadget reviews or non-IT fluff.
     2. Write a clear, engaging, and SUBSTANTIAL Telegram post in Russian.
     3. At the end, append a SHORT, COMPACT Educational Tech Fact about the term: "{selected_term}"
@@ -134,17 +140,18 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
     - NO Markdown headers (`#` or `##`)! Use standard Telegram Markdown (v1): *bold*, _italic_, `code`, [link text](url).
 
     CRITICAL LINGUISTIC RULES FOR AI:
-    - DO NOT TRANSLATE EMOJIS! Always output the EXACT emojis from the template (📰, 📌, ⚙️, ⚡, 🔗, 💡). Never translate them to text like "Свет" or "Точка".
+    - DO NOT TRANSLATE EMOJIS! Always output the EXACT emojis from the template (📌, ⚙️, ⚡, 🔗, 💡).
+    - Headline Emoji: Use 🎓 for Education/Study news, ⚖️ for Laws/Unions/Salaries, and 📰 for general IT/Tech news.
     - The separator line MUST be EXACTLY the three unicode squares `▫️ ▫️ ▫️`. Do NOT write "Точка Точка Точка".
     - Keep all bold asterisks (*).
 
     CRITICAL CONTENT EXPANSION REQUIREMENTS:
-    - EXPAND WITH DOMAIN KNOWLEDGE: Explain the likely mechanism and architectural impact, but do NOT invent specific numbers, versions, or product names that are not present in the source text.
-    - NEVER write generic one-liners. Explain the SPECIFIC tech, protocols, frameworks, or architectural impact!ic one-liners. Explain the SPECIFIC tech, protocols, frameworks, or architectural impact!
+    - EXPAND WITH DOMAIN KNOWLEDGE: Explain the likely mechanism, legislative impact, or architectural impact, but do NOT invent specific numbers, versions, or product names that are not present in the source text.
+    - NEVER write generic one-liners. Explain the SPECIFIC rules, tech, protocols, frameworks, or impact!
 
     EXACT TELEGRAM TEMPLATE TO FOLLOW (copy the emojis and formatting EXACTLY):
     ```
-    📰 *[Catchy, Specific Headline in Russian]*
+    [Headline Emoji: 🎓, ⚖️, or 📰] *[Catchy, Specific Headline in Russian]*
 
     📌 *Что произошло:*
     [1-2 clear sentences explaining the event]
@@ -418,6 +425,11 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
                 new_used_terms.append(new_used_term)
                 used_terms.append(new_used_term)
             restructuring_comps.extend(analysis.get("restructuring_companies", []))
+            
+        # Rate Limiting: Sleep to avoid hitting Gemini/Groq free tier limits (RPM)
+        if len(batches) > 1 and batch != batches[-1]:
+            logger.info("Sleeping for 10 seconds to respect LLM free-tier rate limits...")
+            await asyncio.sleep(10)
 
     # Any new articles that were NOT processed (because they exceeded the 30 limit)
     # should still be marked as seen so they don't clog up the backlog forever.
