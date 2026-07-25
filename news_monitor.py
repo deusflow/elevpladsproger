@@ -290,8 +290,21 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
 
 async def process_news(state: dict, force_post: bool = False) -> dict:
     """Fetch news, analyze with LLM, and return restructuring companies, digest, and used term if new articles found."""
-    seen_news = state.get("seen_news", [])
+    raw_seen = state.get("seen_news", [])
     used_terms = state.get("used_terms", [])
+    
+    current_time = datetime.now().timestamp()
+    seen_news: list[dict[str, Any]] = []
+    
+    # Normalize legacy string-based seen_news and enforce 10-day retention
+    for item in raw_seen:
+        if isinstance(item, str):
+            # Legacy string
+            seen_news.append({"link": item, "title": "", "timestamp": current_time})
+        elif isinstance(item, dict):
+            item_time = item.get("timestamp", 0)
+            if current_time - item_time <= 864000: # 10 days in seconds
+                seen_news.append(item)
     
     # Collect all target companies
     import json as json_lib
@@ -337,10 +350,12 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     # we just seed the seen_news with all current articles to prevent a massive spam wave on first run.
     if len(seen_news) == 0 and len(all_articles) > 0 and not force_post:
         logger.info("Cold start detected. Seeding seen_news with current articles and skipping LLM processing.")
+        for art in all_articles:
+            seen_news.append({"link": art["link"], "title": art["title"], "timestamp": art.get("timestamp", current_time)})
         return {
             "restructuring_companies": [], 
             "digests_ru": [], 
-            "new_links": [art["link"] for art in all_articles], 
+            "seen_news": seen_news,
             "new_used_terms": []
         }
 
@@ -349,7 +364,19 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         logger.info("force_post is True, skipping seen_news check.")
         new_articles = all_articles
     else:
-        new_articles = [art for art in all_articles if art["link"] not in seen_news]
+        new_articles = []
+        for art in all_articles:
+            is_dupe = False
+            for seen in seen_news:
+                if seen["link"] == art["link"]:
+                    is_dupe = True
+                    break
+                if seen["title"] and jaccard_similarity(art["title"], seen["title"]) > 0.6:
+                    is_dupe = True
+                    break
+            
+            if not is_dupe:
+                new_articles.append(art)
     
     if not new_articles:
         logger.info("No new news articles to process.")
@@ -396,12 +423,25 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     # should still be marked as seen so they don't clog up the backlog forever.
     # However, if force_post is true, we don't necessarily want to mark everything as seen if we didn't process it.
     if not force_post:
-        processed_links.extend([art["link"] for art in new_articles[30:]])
+        for art in new_articles[30:]:
+            seen_news.append({"link": art["link"], "title": art["title"], "timestamp": art.get("timestamp", current_time)})
+
+    # Also append processed links
+    for art in articles_to_process:
+        seen_news.append({"link": art["link"], "title": art["title"], "timestamp": art.get("timestamp", current_time)})
+
+    # Dedup the seen_news itself (just in case) based on link
+    final_seen = []
+    seen_links = set()
+    for s in seen_news:
+        if s["link"] not in seen_links:
+            seen_links.add(s["link"])
+            final_seen.append(s)
 
     return {
         "restructuring_companies": list(set(restructuring_comps)),
         "digests_ru": digests_ru,
-        "new_links": processed_links,
+        "seen_news": final_seen,
         "new_used_terms": new_used_terms
     }
 

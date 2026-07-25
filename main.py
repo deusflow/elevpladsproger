@@ -418,19 +418,14 @@ async def main():
         news_result = await news_monitor.process_news(state, force_post=force_post_env)
         digests_ru = news_result.get("digests_ru", [])
         restructuring_companies = news_result.get("restructuring_companies", [])
-        new_links = news_result.get("new_links", [])
-        new_used_terms = news_result.get("new_used_terms", [])
-        
-        import time
-        now = time.time()
-
-        if new_links:
+        if "seen_news" in news_result:
             state_updated = True
-            state["seen_news"] = state.get("seen_news", []) + new_links
-            # Keep only the last 500 seen news links to avoid unbounded growth but still track backlogs
-            state["seen_news"] = state["seen_news"][-500:]
-            if restructuring_companies:
-                state["restructuring_companies"] = list(set(state.get("restructuring_companies", []) + restructuring_companies))
+            state["seen_news"] = news_result["seen_news"]
+            
+        if restructuring_companies:
+            state["restructuring_companies"] = list(set(state.get("restructuring_companies", []) + restructuring_companies))
+            
+        new_used_terms = news_result.get("new_used_terms", [])
         
         if new_used_terms:
             state_updated = True

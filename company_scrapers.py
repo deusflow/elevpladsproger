@@ -228,7 +228,7 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
             
         return jobs
 
-async def scrape_all_companies(context: BrowserContext, dynamic_companies: Optional[list[dict]] = None) -> list[dict]:
+async def scrape_custom_companies(context: BrowserContext, dynamic_companies: Optional[list[dict]] = None) -> list[dict]:
     jobs: list[dict] = []
     try:
         with open("target_companies.json", "r", encoding="utf-8") as f:
