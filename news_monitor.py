@@ -16,38 +16,104 @@ import time
 DANISH_STOPWORDS = {
     "i", "af", "på", "med", "for", "at", "en", "et", "den", "det", "de", "til", "fra", "om",
     "er", "som", "vil", "har", "ikke", "der", "sig", "kan", "var", "også", "men", "da", "nu",
-    "ud", "over", "under", "efter", "ny", "nyt", "nye", "mod", "mere", "mange", "flere"
+    "ud", "over", "under", "efter", "ny", "nyt", "nye", "mod", "mere", "mange", "flere",
+    "blev", "bliver", "ved", "kun", "når", "andre", "meget", "alle", "denne", "disse",
+    "skal", "her", "hvad", "hvordan", "hvorfor", "stor", "stort", "store"
+}
+
+# Synonym groups: words that mean the same thing in news context
+# If two titles share the same entity AND matching synonym groups, they're about the same event
+SYNONYM_GROUPS = [
+    {"sandbox", "sandkasse", "isoleret", "kontrolleret", "miljø", "miljøet", "isolation"},
+    {"brød", "bryder", "undslap", "undslappet", "undslippe", "omgik", "omgå", "flygtede", "escapede", "broke", "escape", "escaped", "vyrset"},
+    {"agent", "model", "modellen", "agenten", "bot", "system", "ai", "kunstig", "intelligens"},
+    {"sikkerhed", "sikkerhedstest", "sikkerhedsforanstaltninger", "sikkerhedsforskere", "sikkerheds", "security"},
+    {"fyring", "fyringer", "afskedigelse", "afskedigelser", "nedskæringer", "nedskæring", "opsigelse", "opsigelser", "layoff", "layoffs"},
+    {"ansætter", "ansættelse", "ansættelser", "rekrutterer", "rekruttering", "hiring"},
+    {"hacket", "hacking", "hack", "hackere", "cyberangreb", "angreb", "databrud", "breach", "lækket", "læk"},
+    {"lancerer", "lancering", "præsenterer", "præsentation", "annoncerer", "annoncering", "offentliggør", "udgivelse", "release"},
+    {"opkøb", "opkøber", "køber", "køb", "acquisition", "overtager", "overtagelse", "fusionerer", "fusion"},
+    {"elev", "elevplads", "elevpladser", "lærling", "lærlinge", "læreplads", "lærepladser", "apprentice"},
+]
+
+# Key named entities that anchor topic identity
+KEY_ENTITIES = {
+    "openai", "chatgpt", "gpt", "google", "gemini", "microsoft", "copilot",
+    "apple", "nvidia", "crowdstrike", "meta", "amazon", "aws", "tesla",
+    "aub", "eud", "eux", "datatekniker", "anthropic", "claude", "deepmind",
+    "github", "docker", "kubernetes", "linux", "android", "tiktok",
+    "twitter", "threads", "instagram", "whatsapp", "signal", "telegram"
 }
 
 def clean_tokens(s: str) -> set[str]:
     words = re.findall(r'\w+', s.lower())
     return {w for w in words if w not in DANISH_STOPWORDS and len(w) > 2}
 
-def jaccard_similarity(s1: str, s2: str) -> float:
-    set1 = clean_tokens(s1)
-    set2 = clean_tokens(s2)
-    if not set1 or not set2:
-        return 0.0
-    
-    intersection = set1.intersection(set2)
-    union = set1.union(set2)
-    score = len(intersection) / len(union) if union else 0.0
+def get_topic_fingerprint(title: str) -> set[str]:
+    """Extract a normalized topic fingerprint from a title.
+    Maps synonyms to canonical forms and extracts named entities.
+    Two articles about the same event will share the same fingerprint even with different vocabulary."""
+    tokens = clean_tokens(title)
+    fingerprint: set[str] = set()
 
-    # Key entity matching for brands/products (e.g. OpenAI, ChatGPT, Crowdstrike, etc.)
-    key_brands = {"openai", "chatgpt", "google", "microsoft", "apple", "nvidia", "crowdstrike", "aub", "eud", "eux"}
-    brands1 = set1.intersection(key_brands)
-    brands2 = set2.intersection(key_brands)
-    
-    if brands1 and brands2 and brands1 == brands2:
-        # Same major brand/topic: check if any remaining tokens match stem
-        rest1 = set1 - key_brands
-        rest2 = set2 - key_brands
-        for t1 in rest1:
-            for t2 in rest2:
-                if t1 in t2 or t2 in t1 or (len(t1) >= 4 and len(t2) >= 4 and t1[:4] == t2[:4]):
-                    return 0.75 # High similarity match
-                    
-    return score
+    # 1. Add any named entities directly
+    for token in tokens:
+        if token in KEY_ENTITIES:
+            fingerprint.add(token)
+
+    # 2. Map tokens to synonym group IDs
+    for i, group in enumerate(SYNONYM_GROUPS):
+        for token in tokens:
+            if token in group:
+                fingerprint.add(f"syn:{i}")
+                break
+
+    return fingerprint
+
+def is_topic_duplicate(title1: str, title2: str) -> bool:
+    """Check if two titles are about the same topic/event.
+    Uses a combination of: entity overlap, synonym group matching, and Jaccard similarity."""
+    if not title1 or not title2:
+        return False
+
+    # Layer 1: Direct Jaccard on cleaned tokens (catches obvious dupes)
+    set1 = clean_tokens(title1)
+    set2 = clean_tokens(title2)
+    if set1 and set2:
+        intersection = set1.intersection(set2)
+        union = set1.union(set2)
+        jaccard = len(intersection) / len(union)
+        if jaccard > 0.5:  # Lowered from 0.6 since we strip stopwords now
+            return True
+
+    # Layer 2: Topic fingerprint matching
+    fp1 = get_topic_fingerprint(title1)
+    fp2 = get_topic_fingerprint(title2)
+
+    if not fp1 or not fp2:
+        return False
+
+    # Both must share at least one named entity
+    entities1 = {t for t in fp1 if not t.startswith("syn:")}
+    entities2 = {t for t in fp2 if not t.startswith("syn:")}
+    shared_entities = entities1 & entities2
+
+    if not shared_entities:
+        return False
+
+    # If they share an entity AND at least one synonym group, it's the same topic
+    syns1 = {t for t in fp1 if t.startswith("syn:")}
+    syns2 = {t for t in fp2 if t.startswith("syn:")}
+    shared_syns = syns1 & syns2
+
+    if shared_entities and shared_syns:
+        return True
+
+    # If they share 2+ entities, likely same topic even without synonym match
+    if len(shared_entities) >= 2:
+        return True
+
+    return False
 
 async def fetch_rss(url: str) -> tuple[list[dict], bool]:
     """Fetch and parse RSS/Atom feed into a list of articles using feedparser and httpx. Returns (articles, success_flag)."""
@@ -269,7 +335,7 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
 
     # 1. Try Gemini API first if key is available
     if config.GEMINI_API_KEY:
-        gemini_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-3.5-flash"]
+        gemini_models = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.0-flash"]
         for g_model in gemini_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             payload: dict[str, Any] = {
@@ -408,12 +474,16 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         else:
             feed_failures[source] = 0
 
-        # Semantic Deduplication across feeds
+        # Semantic Deduplication across feeds using topic fingerprinting
         for art in articles:
             is_dupe = False
             for existing in all_articles:
-                if jaccard_similarity(art["title"], existing["title"]) > 0.6:
+                if existing["link"] == art["link"]:
                     is_dupe = True
+                    break
+                if is_topic_duplicate(art["title"], existing["title"]):
+                    is_dupe = True
+                    logger.debug(f"Cross-feed dedup: '{art['title'][:50]}' matches '{existing['title'][:50]}'")
                     break
             if not is_dupe:
                 all_articles.append(art)
@@ -436,7 +506,7 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
             "new_used_terms": []
         }
 
-    # Filter out seen articles based on link unless force_post is True
+    # Filter out seen articles using topic fingerprint + link matching
     if force_post:
         logger.info("force_post is True, skipping seen_news check.")
         new_articles = all_articles
@@ -445,11 +515,14 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         for art in all_articles:
             is_dupe = False
             for seen in seen_news:
+                # Check by link (exact URL match)
                 if seen["link"] == art["link"]:
                     is_dupe = True
                     break
-                if seen["title"] and jaccard_similarity(art["title"], seen["title"]) > 0.6:
+                # Check by topic (catches same story from different sources/days)
+                if seen.get("title") and is_topic_duplicate(art["title"], seen["title"]):
                     is_dupe = True
+                    logger.info(f"Topic dedup blocked: '{art['title'][:60]}' matches seen '{seen['title'][:60]}'")
                     break
             
             if not is_dupe:
@@ -457,10 +530,10 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     
     if not new_articles:
         logger.info("No new news articles to process.")
-        return {"restructuring_companies": [], "digests_ru": [], "new_links": [], "new_used_terms": []}
+        return {"restructuring_companies": [], "digests_ru": [], "seen_news": seen_news, "new_used_terms": []}
 
-    # Limit processing candidate set to top 12 fresh articles for 1 single digest post per run
-    articles_to_process = new_articles[:12]
+    # Limit to top 10 candidate articles for a single digest post
+    articles_to_process = new_articles[:10]
     logger.info(f"Found {len(new_articles)} new articles. Generating 1 single digest post from top {len(articles_to_process)} articles...")
 
     analysis = await ask_llm_news(articles_to_process, target_company_names, used_terms, seen_news=seen_news)
@@ -477,30 +550,29 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     new_used_term = analysis.get("used_term", "").strip()
     
     digests_ru = []
-    processed_links = []
     new_used_terms = []
     restructuring_comps = []
 
     if digest_ru:
         digests_ru.append(digest_ru)
-        processed_links.extend([art["link"] for art in articles_to_process])
         if new_used_term:
             new_used_terms.append(new_used_term)
             used_terms.append(new_used_term)
         restructuring_comps.extend(analysis.get("restructuring_companies", []))
 
-    # Any new articles that were NOT processed should still be marked as seen so they don't clog up the backlog
-    if not force_post:
-        for art in new_articles[21:]:
-            seen_news.append({"link": art["link"], "title": art["title"], "timestamp": art.get("timestamp", current_time)})
+    # CRITICAL FIX: Mark ALL new articles as seen (not just processed ones)
+    # This prevents articles at indexes 10+ from reappearing next run
+    for art in new_articles:
+        if not any(s["link"] == art["link"] for s in seen_news):
+            seen_news.append({
+                "link": art["link"],
+                "title": art["title"],  # Always store title for topic matching
+                "timestamp": art.get("timestamp", current_time)
+            })
 
-    # Also append processed links
-    for art in articles_to_process:
-        seen_news.append({"link": art["link"], "title": art["title"], "timestamp": art.get("timestamp", current_time)})
-
-    # Dedup the seen_news itself (just in case) based on link
-    final_seen = []
-    seen_links = set()
+    # Dedup seen_news by link
+    final_seen: list[dict[str, Any]] = []
+    seen_links: set[str] = set()
     for s in seen_news:
         if s["link"] not in seen_links:
             seen_links.add(s["link"])
