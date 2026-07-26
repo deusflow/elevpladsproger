@@ -70,7 +70,7 @@ async def main():
     config.RSS_FEEDS = {"Mock": "http://mock"}
     
     # Override LLM call so we don't actually hit Gemini
-    async def mock_ask_llm(batch, target_companies, used_terms):
+    async def mock_ask_llm(batch, target_companies, used_terms, **kwargs):
         return {
             "restructuring_companies": [],
             "digest_ru": "📰 *Test Digest*\n\n📌 *Test*\nThis is a test.\n\n▫️ ▫️ ▫️\n💡 *Term:* Test",

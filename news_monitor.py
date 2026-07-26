@@ -13,12 +13,41 @@ import feedparser
 import re
 import time
 
+DANISH_STOPWORDS = {
+    "i", "af", "på", "med", "for", "at", "en", "et", "den", "det", "de", "til", "fra", "om",
+    "er", "som", "vil", "har", "ikke", "der", "sig", "kan", "var", "også", "men", "da", "nu",
+    "ud", "over", "under", "efter", "ny", "nyt", "nye", "mod", "mere", "mange", "flere"
+}
+
+def clean_tokens(s: str) -> set[str]:
+    words = re.findall(r'\w+', s.lower())
+    return {w for w in words if w not in DANISH_STOPWORDS and len(w) > 2}
+
 def jaccard_similarity(s1: str, s2: str) -> float:
-    set1 = set(re.findall(r'\w+', s1.lower()))
-    set2 = set(re.findall(r'\w+', s2.lower()))
+    set1 = clean_tokens(s1)
+    set2 = clean_tokens(s2)
     if not set1 or not set2:
         return 0.0
-    return len(set1.intersection(set2)) / len(set1.union(set2))
+    
+    intersection = set1.intersection(set2)
+    union = set1.union(set2)
+    score = len(intersection) / len(union) if union else 0.0
+
+    # Key entity matching for brands/products (e.g. OpenAI, ChatGPT, Crowdstrike, etc.)
+    key_brands = {"openai", "chatgpt", "google", "microsoft", "apple", "nvidia", "crowdstrike", "aub", "eud", "eux"}
+    brands1 = set1.intersection(key_brands)
+    brands2 = set2.intersection(key_brands)
+    
+    if brands1 and brands2 and brands1 == brands2:
+        # Same major brand/topic: check if any remaining tokens match stem
+        rest1 = set1 - key_brands
+        rest2 = set2 - key_brands
+        for t1 in rest1:
+            for t2 in rest2:
+                if t1 in t2 or t2 in t1 or (len(t1) >= 4 and len(t2) >= 4 and t1[:4] == t2[:4]):
+                    return 0.75 # High similarity match
+                    
+    return score
 
 async def fetch_rss(url: str) -> tuple[list[dict], bool]:
     """Fetch and parse RSS/Atom feed into a list of articles using feedparser and httpx. Returns (articles, success_flag)."""
@@ -135,10 +164,10 @@ def build_quality_fallback_digest(batch: list[dict], used_term: str) -> str:
     )
     return fallback
 
-async def ask_llm_news(articles: list[dict], target_companies: list[str], used_terms: list[str]) -> dict:
+async def ask_llm_news(articles: list[dict], target_companies: list[str], used_terms: list[str], seen_news: list[dict] = []) -> dict:
     """
     Pass articles to LLM to check for layoffs/restructuring
-    and to generate a Russian digest with an educational tech fact.
+    and to generate a single Russian digest post with an educational tech fact.
     """
     if (not config.GEMINI_API_KEY and not config.GROQ_API_KEY) or not articles:
         return {"restructuring_companies": [], "digest_ru": "", "used_term": ""}
@@ -146,13 +175,16 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
     # Select an unused tech term
     available_terms = [t for t in config.TECH_TERMS_POOL if t not in used_terms]
     if not available_terms:
-        # If all exhausted, clear history and start over
         available_terms = config.TECH_TERMS_POOL
     
     import random
     selected_term = random.choice(available_terms)
 
-    # Context string (articles are already sliced in batches before passing here)
+    # Prepare recent covered topics from seen_news for deduplication & update context
+    recent_seen_titles = [item.get("title", "") for item in reversed(seen_news[-20:]) if item.get("title")]
+    recent_topics_str = "\n".join([f"- {t}" for t in recent_seen_titles[:15]]) if recent_seen_titles else "None"
+
+    # Context string (articles list)
     articles_snippet = ""
     for idx, art in enumerate(articles):
         desc = art['description'][:800] + "..." if len(art['description']) > 800 else art['description']
@@ -161,20 +193,28 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
     companies_str = ", ".join(target_companies)
 
     prompt = f"""
-    You are a senior IT editor for a top Telegram tech channel read on mobile phones (iPhones / Android).
+    You are a senior IT editor for a top Telegram tech channel read on mobile phones.
     Below are the latest Danish IT news articles.
 
     Task 1 (Layoffs/Restructuring):
     Check if any of the following specific companies are mentioned in the news regarding layoffs (fyringer), restructuring, or mass firings:
     Companies: {companies_str}
 
-    Task 2 (High-Substance Russian Tech Digest Post):
-    1. Select the single MOST interesting, technical, or impactful news article from the list.
+    Task 2 (Single High-Substance Russian Tech Digest Post):
+    1. Check the list of RECENTLY PUBLISHED TOPICS in our channel below:
+       [Recently Published Topics]:
+       {recent_topics_str}
+
+    2. Select the single MOST interesting, technical, or impactful news article from the articles list below.
+       CRITICAL TOPIC DEDUPLICATION & UPDATE RULES:
+       - DO NOT SELECT an article if it is about the EXACT SAME event/topic already listed in [Recently Published Topics] with no new information! Pick a different, fresh news story instead.
+       - IF an article is a genuine NEW DEVELOPMENT or UPDATE to a story in [Recently Published Topics], you MAY select it, but you MUST prefix the headline with:
+         "🔄 *Дополнение к вчерашней новости:* [Catchy Headline]" (or "🔄 *Дополнение к новости:* [Catchy Headline]").
        - EXTREME PRIORITY: If an article is about IT Education in Denmark (EUD, EUX, SU, IT-supporter, Datatekniker, admissions), or IT Apprenticeship Laws (elevplads rules, AUB subsidies, overenskomst, elevløn, unions), you MUST prioritize it over general tech news!
-       - Otherwise, prioritize topics with a 75% focus on developers (Architecture, Code, DevOps, Cybersecurity) and 25% on the tech scene (Startups, Tech Science, Infra).
-       - Ignore consumer gadget reviews or non-IT fluff.
-    2. Write a clear, engaging, and SUBSTANTIAL Telegram post in Russian.
-    3. At the end, append a SHORT, COMPACT Educational Tech Fact about the term: "{selected_term}"
+       - Otherwise, prioritize topics with a 75% focus on developers (Architecture, Code, DevOps, Cybersecurity) and 25% on the tech scene.
+
+    3. Write a clear, engaging, and SUBSTANTIAL Telegram post in Russian.
+    4. At the end, append a SHORT, COMPACT Educational Tech Fact about the term: "{selected_term}"
 
     CRITICAL TELEGRAM MOBILE FORMATTING RULES:
     - NO LEADING SPACES OR TABS! Every line must start at column 0.
@@ -182,18 +222,14 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
     - NO Markdown headers (`#` or `##`)! Use standard Telegram Markdown (v1): *bold*, _italic_, `code`, [link text](url).
 
     CRITICAL LINGUISTIC RULES FOR AI:
-    - DO NOT TRANSLATE EMOJIS! Always output the EXACT emojis from the template (📌, ⚙️, ⚡, 🔗, 💡).
-    - Headline Emoji: Use 🎓 for Education/Study news, ⚖️ for Laws/Unions/Salaries, and 📰 for general IT/Tech news.
-    - The separator line MUST be EXACTLY the three unicode squares `▫️ ▫️ ▫️`. Do NOT write "Точка Точка Точка".
+    - DO NOT TRANSLATE EMOJIS! Always output the EXACT emojis from the template (📌, ⚙️, ⚡, 🔗, 💡, 🔄).
+    - Headline Emoji: Use 🎓 for Education/Study news, ⚖️ for Laws/Unions/Salaries, 🔄 for updates, and 📰 for general IT/Tech news.
+    - The separator line MUST be EXACTLY the three unicode squares `▫️ ▫️ ▫️`.
     - Keep all bold asterisks (*).
-
-    CRITICAL CONTENT EXPANSION REQUIREMENTS:
-    - EXPAND WITH DOMAIN KNOWLEDGE: Explain the likely mechanism, legislative impact, or architectural impact, but do NOT invent specific numbers, versions, or product names that are not present in the source text.
-    - NEVER write generic one-liners. Explain the SPECIFIC rules, tech, protocols, frameworks, or impact!
 
     EXACT TELEGRAM TEMPLATE TO FOLLOW (copy the emojis and formatting EXACTLY):
     ```
-    [Headline Emoji: 🎓, ⚖️, or 📰] *[Catchy, Specific Headline in Russian]*
+    [Headline Emoji: 🎓, ⚖️, 🔄, or 📰] *[Catchy, Specific Headline in Russian]*
 
     📌 *Что произошло:*
     [1-2 clear sentences explaining the event]
@@ -214,10 +250,6 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
     • [Short key point 1 (max 1 line)]
     • [Short key point 2 (max 1 line)]
     ```
-
-    CRITICAL Requirements for the Tech Fact Footer ("{selected_term}"):
-    - Keep it ULTRA-CONCISE (200–350 characters total).
-    - Maximum 2 bullet points. Each bullet point MUST be 1 short line.
 
     Articles:
     {articles_snippet}
@@ -427,49 +459,37 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         logger.info("No new news articles to process.")
         return {"restructuring_companies": [], "digests_ru": [], "new_links": [], "new_used_terms": []}
 
-    # Limit processing to max 21 articles (up to 3 digests) to avoid overloading the LLM context window (TPM limits)
-    articles_to_process = new_articles[:21]
-    logger.info(f"Found {len(new_articles)} new articles. Processing top {len(articles_to_process)} (Sending to LLM)...")
+    # Limit processing candidate set to top 12 fresh articles for 1 single digest post per run
+    articles_to_process = new_articles[:12]
+    logger.info(f"Found {len(new_articles)} new articles. Generating 1 single digest post from top {len(articles_to_process)} articles...")
 
-    # Chunk into batches of 7 to keep prompt sizes small (reduces hallucinations and token limits)
-    batch_size = 7
-    batches = [articles_to_process[i:i + batch_size] for i in range(0, len(articles_to_process), batch_size)]
+    analysis = await ask_llm_news(articles_to_process, target_company_names, used_terms, seen_news=seen_news)
+    digest_ru = analysis.get("digest_ru", "").strip()
+    
+    if not digest_ru:
+        logger.warning("LLM generation failed for all models. Using high-quality full structure fallback digest.")
+        fallback_term = (set(config.TECH_TERMS_POOL) - set(used_terms)).pop() if (set(config.TECH_TERMS_POOL) - set(used_terms)) else "REST API"
+        digest_ru = build_quality_fallback_digest(articles_to_process, fallback_term)
+        analysis["digest_ru"] = digest_ru
+        analysis["used_term"] = fallback_term
+        
+    digest_ru = analysis.get("digest_ru", "").strip()
+    new_used_term = analysis.get("used_term", "").strip()
     
     digests_ru = []
     processed_links = []
     new_used_terms = []
     restructuring_comps = []
 
-    for batch in batches:
-        analysis = await ask_llm_news(batch, target_company_names, used_terms)
-        digest_ru = analysis.get("digest_ru", "").strip()
-        
-        if not digest_ru:
-            logger.warning("LLM generation failed for all models. Using high-quality full structure fallback digest.")
-            fallback_term = (set(config.TECH_TERMS_POOL) - set(used_terms)).pop() if (set(config.TECH_TERMS_POOL) - set(used_terms)) else "REST API"
-            digest_ru = build_quality_fallback_digest(batch, fallback_term)
-            analysis["digest_ru"] = digest_ru
-            analysis["used_term"] = fallback_term
-            
-        digest_ru = analysis.get("digest_ru", "").strip()
-        new_used_term = analysis.get("used_term", "").strip()
-        
-        if digest_ru:
-            digests_ru.append(digest_ru)
-            processed_links.extend([art["link"] for art in batch])
-            if new_used_term:
-                new_used_terms.append(new_used_term)
-                used_terms.append(new_used_term)
-            restructuring_comps.extend(analysis.get("restructuring_companies", []))
-            
-        # Rate Limiting: Sleep to avoid hitting Gemini/Groq free tier limits (RPM and TPM)
-        if len(batches) > 1 and batch != batches[-1]:
-            logger.info("Sleeping for 15 seconds to respect LLM free-tier rate limits and allow token buckets to refill...")
-            await asyncio.sleep(15)
+    if digest_ru:
+        digests_ru.append(digest_ru)
+        processed_links.extend([art["link"] for art in articles_to_process])
+        if new_used_term:
+            new_used_terms.append(new_used_term)
+            used_terms.append(new_used_term)
+        restructuring_comps.extend(analysis.get("restructuring_companies", []))
 
-    # Any new articles that were NOT processed (because they exceeded the limit)
-    # should still be marked as seen so they don't clog up the backlog forever.
-    # However, if force_post is true, we don't necessarily want to mark everything as seen if we didn't process it.
+    # Any new articles that were NOT processed should still be marked as seen so they don't clog up the backlog
     if not force_post:
         for art in new_articles[21:]:
             seen_news.append({"link": art["link"], "title": art["title"], "timestamp": art.get("timestamp", current_time)})
