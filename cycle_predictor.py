@@ -50,9 +50,9 @@ def analyze_and_predict(state: dict) -> list[str]:
                 }
                 month_name = month_names[target_month]
                 alerts.append(
-                    f"💡 *Hiring Cycle Predictor*\n"
-                    f"🏢 *{company.title()}* plejer historisk at åbne for IT\\-elev/Datatekniker stillinger i {month_name}\\. "
-                    f"Det er tid til at forberede dit CV og holde ekstra øje med deres karriereside\\!"
+                    f"💡 <b>Hiring Cycle Predictor</b>\n"
+                    f"🏢 <b>{company.title()}</b> plejer historisk at åbne for IT-elev/Datatekniker stillinger i {month_name}. "
+                    f"Det er tid til at forberede dit CV og holde ekstra øje med deres karriereside!"
                 )
                 predictions_sent[alert_key] = True
                 

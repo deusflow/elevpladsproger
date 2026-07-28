@@ -132,7 +132,10 @@ async def fetch_rss(url: str) -> tuple[list[dict], bool]:
                     link = getattr(entry, "link", "")
                     description = getattr(entry, "description", getattr(entry, "summary", ""))
                     published = getattr(entry, "published_parsed", None)
-                    timestamp = time.mktime(published) if published else 0
+                    try:
+                        timestamp = time.mktime(published) if published else 0
+                    except (OverflowError, ValueError, TypeError):
+                        timestamp = 0
                     
                     if description:
                         description = re.sub(r'<[^>]+>', ' ', description)
@@ -170,7 +173,7 @@ def extract_json_payload(text_content: str) -> dict:
     return json.loads(text_content, strict=False)
 
 async def autograde_digest(digest_ru: str, snippets: str) -> bool:
-    """Advisory check for hallucinations. Logs warnings without blocking valid generation."""
+    """Check for hallucinations. Returns False if digest is severely hallucinated."""
     if not config.GEMINI_API_KEY:
         return True
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={config.GEMINI_API_KEY}"
@@ -182,51 +185,51 @@ async def autograde_digest(digest_ru: str, snippets: str) -> bool:
             if resp.status_code == 200:
                 res = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
                 if "FAIL" in res.upper():
-                    logger.warning(f"Autograder advisory flag: {res}")
+                    logger.warning(f"Autograder BLOCKED digest: {res}")
+                    return False
     except Exception as e:
-        logger.warning(f"Autograder advisory check error: {e}")
+        logger.warning(f"Autograder check error (allowing digest): {e}")
     return True
 
 def validate_format(digest_ru: str) -> bool:
-    """Validate that digest_ru is non-empty, substantial, and contains basic Telegram links/formatting."""
+    """Validate that digest_ru is non-empty, substantial, and contains links."""
     if not digest_ru or len(digest_ru) < 80:
         logger.warning("Validation failed: digest too short or empty")
         return False
-    # Check for basic link or section marker
-    if "http" not in digest_ru and "🔗" not in digest_ru:
+    # Check for basic link (HTML <a href> or raw http or emoji link marker)
+    if "http" not in digest_ru and "🔗" not in digest_ru and "<a " not in digest_ru:
         logger.warning("Validation failed: missing original article link")
         return False
     return True
 
 def build_quality_fallback_digest(batch: list[dict], used_term: str) -> str:
-    """Build a beautiful, full-structure Telegram post fallback if all LLMs are unreachable."""
+    """Build a full-structure Telegram post fallback in HTML if all LLMs are unreachable."""
     if not batch:
         return ""
+    import html as _html
     main_art = batch[0]
-    title = main_art.get("title", "Главные новости IT").strip()
+    title = _html.escape(main_art.get("title", "Главные новости IT").strip())
     link = main_art.get("link", "").strip()
-    desc = main_art.get("description", "").strip()
+    desc = _html.escape(main_art.get("description", "").strip())
     if len(desc) > 300:
         desc = desc[:297] + "..."
     if not desc:
         desc = "Ключевые события и технологические изменения в IT-сфере Дании и Европы."
         
-    term_name = used_term or "REST API"
+    term_name = _html.escape(used_term or "REST API")
     
     fallback = (
-        f"📰 *{title}*\n\n"
-        f"📌 *Что произошло:*\n"
+        f"📰 <b>{title}</b>\n\n"
+        f"📌 <b>Что произошло:</b>\n"
         f"{desc}\n\n"
-        f"⚙️ *Техническая суть:*\n"
+        f"⚙️ <b>Техническая суть:</b>\n"
         f"Подробный разбор и технические детали доступны в первоисточнике публикации.\n\n"
-        f"⚡ *Почему это важно:*\n"
+        f"⚡ <b>Почему это важно:</b>\n"
         f"Актуальные изменения рынка и технологий напрямую влияют на работу разработчиков и IT-специалистов.\n\n"
-        f"🔗 [Читать первоисточник]({link})\n\n"
+        f'🔗 <a href="{link}">Читать первоисточник</a>\n\n'
         f"▫️ ▫️ ▫️\n\n"
-        f"💡 *IT-Термин недели: {term_name}*\n\n"
-        f"Архитектурный стиль для создания масштабируемых веб-сервисов через HTTP.\n"
-        f"• Использует стандартные методы: GET, POST, PUT, DELETE.\n"
-        f"• Основан на передаче состояния ресурсов без сохранения сессии."
+        f"💡 <b>IT-Термин недели: {term_name}</b>\n\n"
+        f"Подробности и объяснение этого термина — в следующем выпуске с AI-генерацией."
     )
     return fallback
 
@@ -258,80 +261,56 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
 
     companies_str = ", ".join(target_companies)
 
-    prompt = f"""
-    You are a senior IT editor for a top Telegram tech channel read on mobile phones.
-    Below are the latest Danish IT news articles.
+    prompt = f"""You are a senior IT editor for a top Telegram tech channel.
 
-    Task 1 (Layoffs/Restructuring):
-    Check if any of the following specific companies are mentioned in the news regarding layoffs (fyringer), restructuring, or mass firings:
-    Companies: {companies_str}
+Task 1: Check if any of these companies have layoffs/restructuring news: {companies_str}
 
-    Task 2 (Single High-Substance Russian Tech Digest Post):
-    1. Check the list of RECENTLY PUBLISHED TOPICS in our channel below:
-       [Recently Published Topics]:
-       {recent_topics_str}
+Task 2: Write ONE Russian tech digest post.
 
-    2. Select the single MOST interesting, technical, or impactful news article from the articles list below.
-       CRITICAL TOPIC DEDUPLICATION & UPDATE RULES:
-       - DO NOT SELECT an article if it is about the EXACT SAME event/topic already listed in [Recently Published Topics] with no new information! Pick a different, fresh news story instead.
-       - IF an article is a genuine NEW DEVELOPMENT or UPDATE to a story in [Recently Published Topics], you MAY select it, but you MUST prefix the headline with:
-         "🔄 *Дополнение к вчерашней новости:* [Catchy Headline]" (or "🔄 *Дополнение к новости:* [Catchy Headline]").
-       - EXTREME PRIORITY: If an article is about IT Education in Denmark (EUD, EUX, SU, IT-supporter, Datatekniker, admissions), or IT Apprenticeship Laws (elevplads rules, AUB subsidies, overenskomst, elevløn, unions), you MUST prioritize it over general tech news!
-       - Otherwise, prioritize topics with a 75% focus on developers (Architecture, Code, DevOps, Cybersecurity) and 25% on the tech scene.
+Recently published topics (DO NOT repeat these):
+{recent_topics_str}
 
-    3. Write a clear, engaging, and SUBSTANTIAL Telegram post in Russian.
-    4. At the end, append a SHORT, COMPACT Educational Tech Fact about the term: "{selected_term}"
+Pick the MOST interesting article. Priority: IT Education in Denmark (EUD, EUX, Datatekniker) > Developer topics (75%) > Tech scene (25%).
+If the topic is an UPDATE to a recent story, prefix headline with "🔄 <b>Дополнение:</b> ".
 
-    CRITICAL TELEGRAM MOBILE FORMATTING RULES:
-    - NO LEADING SPACES OR TABS! Every line must start at column 0.
-    - Exactly ONE blank line (`\\n\\n`) between sections. Never output multiple empty lines.
-    - NO Markdown headers (`#` or `##`)! Use standard Telegram Markdown (v1): *bold*, _italic_, `code`, [link text](url).
+FORMATTING RULES (Telegram HTML):
+- Use HTML tags: <b>bold</b>, <i>italic</i>, <code>code</code>, <a href="url">text</a>
+- NO Markdown (* or _ or # or ```)!
+- No leading spaces/tabs. Every line starts at column 0.
+- One blank line between sections.
+- Keep emojis EXACTLY as shown in template.
 
-    CRITICAL LINGUISTIC RULES FOR AI:
-    - DO NOT TRANSLATE EMOJIS! Always output the EXACT emojis from the template (📌, ⚙️, ⚡, 🔗, 💡, 🔄).
-    - Headline Emoji: Use 🎓 for Education/Study news, ⚖️ for Laws/Unions/Salaries, 🔄 for updates, and 📰 for general IT/Tech news.
-    - The separator line MUST be EXACTLY the three unicode squares `▫️ ▫️ ▫️`.
-    - Keep all bold asterisks (*).
+TEMPLATE (follow EXACTLY):
+[Emoji: 🎓/⚖️/🔄/📰] <b>[Catchy Headline in Russian]</b>
 
-    EXACT TELEGRAM TEMPLATE TO FOLLOW (copy the emojis and formatting EXACTLY):
-    ```
-    [Headline Emoji: 🎓, ⚖️, 🔄, or 📰] *[Catchy, Specific Headline in Russian]*
+📌 <b>Что произошло:</b>
+[1-2 sentences about the event]
 
-    📌 *Что произошло:*
-    [1-2 clear sentences explaining the event]
+⚙️ <b>Техническая суть:</b>
+[2-3 technical sentences]
 
-    ⚙️ *Техническая суть:*
-    [2-3 detailed technical sentences explaining the underlying mechanism/architecture/technology]
+⚡ <b>Почему это важно:</b>
+[1-2 sentences on impact]
 
-    ⚡ *Почему это важно:*
-    [1-2 informative sentences on practical impact for developers or the IT industry]
+🔗 <a href="[original_link]">Читать первоисточник</a>
 
-    🔗 [Читать первоисточник]([original_link])
+▫️ ▫️ ▫️
 
-    ▫️ ▫️ ▫️
+💡 <b>IT-Термин недели: {selected_term}</b>
 
-    💡 *IT-Термин недели: {selected_term}*
+[1-2 sentences defining the term]
+• [Key point 1]
+• [Key point 2]
 
-    [1-2 short sentences defining the term directly and simply without fluff]
-    • [Short key point 1 (max 1 line)]
-    • [Short key point 2 (max 1 line)]
-    ```
+Articles:
+{articles_snippet}
 
-    Articles:
-    {articles_snippet}
-
-    Return a JSON object EXACTLY like this:
-    {{
-        "restructuring_companies": ["list", "of", "strings"],
-        "digest_ru": "Your clean, unindented Telegram post following the template EXACTLY...",
-        "used_term": "{selected_term}"
-    }}
-
-    Rules:
-    - Return valid JSON only.
-    - If no companies are restructuring, return an empty list [].
-    - You MUST ALWAYS pick at least one news article and write digest_ru.
-    """
+Return ONLY valid JSON:
+{{
+    "restructuring_companies": ["list of company names or empty list"],
+    "digest_ru": "Your HTML-formatted Telegram post",
+    "used_term": "{selected_term}"
+}}"""
 
     # 1. Try Gemini API first if key is available
     if config.GEMINI_API_KEY:
@@ -369,8 +348,11 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
                             
                             if not validate_format(digest_ru):
                                 raise Exception(f"Format validation failed for {g_model}")
-                                
-                            await autograde_digest(digest_ru, articles_snippet)
+
+                            is_valid = await autograde_digest(digest_ru, articles_snippet)
+                            if not is_valid:
+                                logger.warning(f"Autograder rejected digest from {g_model}. Trying next model.")
+                                break
                                 
                             logger.info(f"Successfully generated and validated digest via Gemini API model ({g_model})")
                             return parsed
@@ -421,8 +403,11 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], used_t
                             
                             if not validate_format(digest_ru):
                                 raise Exception(f"Format validation failed for {model}")
-                                
-                            await autograde_digest(digest_ru, articles_snippet)
+
+                            is_valid = await autograde_digest(digest_ru, articles_snippet)
+                            if not is_valid:
+                                logger.warning(f"Autograder rejected digest from {model}. Trying next model.")
+                                break
                                 
                             logger.info(f"Successfully generated and validated digest via Groq fallback ({model})")
                             return parsed

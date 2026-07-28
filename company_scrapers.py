@@ -160,7 +160,9 @@ async def _do_scrape_company(page: Page, url: str):
 async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Semaphore) -> list[dict]:
     name = company.get("name")
     url = company.get("url")
-    if not name or not url:
+    if not name or not url or not url.strip().startswith("http"):
+        if name:
+            logger.debug(f"Skipping {name}: no valid URL configured (url={url!r})")
         return []
         
     async with sem:

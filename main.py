@@ -2,6 +2,7 @@ import asyncio
 from typing import Optional, Any
 import json
 import os
+import html as html_lib
 import httpx
 from datetime import datetime, timezone
 from patchright.async_api import async_playwright
@@ -16,6 +17,9 @@ from config import DB_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, PROXY_URL, SUP
 import config
 
 FALLBACK_FILE = "jobs_db_fallback.json"
+
+# Maximum Telegram message length (with safety margin)
+TELEGRAM_MAX_LEN = 4000
 
 async def load_state() -> dict[str, Any]:
     state: dict[str, Any] = {"jobs": [], "company_hashes": {}}
@@ -49,6 +53,9 @@ async def load_state() -> dict[str, Any]:
                                 state = loaded
                             elif isinstance(loaded, list):
                                 state["jobs"] = loaded
+                            
+                            # Track state version for optimistic locking
+                            state.setdefault("_version", 0)
                         
                         # Merge fallback state if existed
                         if fallback_state:
@@ -110,6 +117,9 @@ async def save_state(state: dict):
         async with httpx.AsyncClient() as client:
             for attempt in range(1, 4):
                 try:
+                    # Increment version for optimistic locking
+                    state["_version"] = state.get("_version", 0) + 1
+                    state["_last_saved"] = datetime.now(timezone.utc).isoformat()
                     resp = await client.post(url, headers=headers, json={"key": "scraper_state", "value": state}, timeout=10.0)
                     if resp.status_code in [200, 201, 204]:
                         logger.info("Saved state to Supabase via UPSERT.")
@@ -141,9 +151,57 @@ async def save_state(state: dict):
     logger.info("Saved state to local file.")
 
 
-def escape_markdown_v2(text: str) -> str:
-    escape_chars = r"_*[]()~`>#+-=|{}.!"
-    return "".join(f"\\{c}" if c in escape_chars else c for c in text)
+def escape_html(text: str) -> str:
+    """Escape text for Telegram HTML parse_mode. Only &, <, > need escaping."""
+    return html_lib.escape(str(text))
+
+
+async def _send_telegram_message(client: httpx.AsyncClient, text: str, parse_mode: str = "HTML") -> bool:
+    """Send a single Telegram message with retry logic. Returns True on success."""
+    if not text or not text.strip():
+        logger.warning("Attempted to send empty Telegram message — skipped.")
+        return False
+
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": config.TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": True
+    }
+
+    for attempt in range(1, 4):
+        try:
+            resp = await client.post(url, json=payload, timeout=15.0)
+            if resp.status_code == 200:
+                logger.info("Sent Telegram notification successfully.")
+                return True
+            elif resp.status_code == 429:
+                # Rate limited — respect Retry-After header
+                retry_after = resp.json().get("parameters", {}).get("retry_after", 5)
+                logger.warning(f"Telegram rate limited. Retrying in {retry_after}s (attempt {attempt}/3)")
+                await asyncio.sleep(retry_after)
+            elif resp.status_code == 400:
+                # Bad request — likely formatting error. Try again without parse_mode
+                logger.error(f"Telegram 400 error (attempt {attempt}/3): {resp.text}")
+                if parse_mode and attempt == 2:
+                    logger.warning("Retrying without parse_mode as plain text fallback...")
+                    payload["parse_mode"] = ""
+                    # Strip HTML tags for plain text fallback
+                    import re as _re
+                    payload["text"] = _re.sub(r'<[^>]+>', '', text)
+                else:
+                    await asyncio.sleep(2)
+            else:
+                logger.error(f"Telegram error {resp.status_code} (attempt {attempt}/3): {resp.text}")
+                await asyncio.sleep(2 ** attempt)
+        except Exception as e:
+            logger.error(f"Telegram send exception (attempt {attempt}/3): {e}")
+            await asyncio.sleep(2 ** attempt)
+
+    logger.error(f"Failed to send Telegram message after 3 attempts. Message starts with: {text[:100]}...")
+    return False
+
 
 async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: Optional[list[str]] = None, news_digest: str = "", restructuring_companies: Optional[list[str]] = None):
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
@@ -153,98 +211,85 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
     if not jobs and not changed_companies and not cycle_alerts and not news_digest:
         return
 
-    messages = []
-    
+    messages: list[str] = []
+
     if cycle_alerts:
         for alert in cycle_alerts:
-            messages.append(alert)
+            if alert and alert.strip():
+                messages.append(alert)
 
-    current_msg = "🎯 *Nye IT-elevpladser fundet!*\n\n" if jobs else ""
+    # Build job notifications in HTML format
+    current_msg = "🎯 <b>Nye IT-elevpladser fundet!</b>\n\n" if jobs else ""
     for job in jobs:
-        title = escape_markdown_v2(job['title'])
-        company = escape_markdown_v2(job['company'])
-        source = escape_markdown_v2(job['source'])
-        # URLs must NOT be escaped — Telegram MarkdownV2 requires raw URLs inside [text](url)
+        title = escape_html(job['title'])
+        company = escape_html(job['company'])
+        source = escape_html(job['source'])
         url = job['url']
-        
+
         # Check accreditation
         is_approved = await accreditation_checker.check_accreditation(job['company'])
         accreditation_badge = "✅ Godkendt lærested: Datatekniker" if is_approved else "⚠️ Status ukendt / Kræver godkendelse"
-        
+
         is_restructuring = restructuring_companies and job['company'] in restructuring_companies
-        restructuring_badge = "⚠️ *Компания проходит реструктуризацию/увольнения!*\n" if is_restructuring else ""
-        
+        restructuring_badge = "⚠️ <b>Компания проходит реструктуризацию/увольнения!</b>\n" if is_restructuring else ""
+
         match_score = job.get('match_score')
         if match_score is not None:
-            city = escape_markdown_v2(job.get('match_city', 'Ukendt'))
-            reason = escape_markdown_v2(job.get('match_reason', ''))
-            job_str = f"🎯 *{match_score}% Match* \\| {city}\n🔹 *{title}*\n🏢 {company} \\({source}\\)\n🎓 _{accreditation_badge}_\n{restructuring_badge}💡 _{reason}_\n🔗 [Ansøg her]({url})\n\n"
+            city = escape_html(job.get('match_city', 'Ukendt'))
+            reason = escape_html(job.get('match_reason', ''))
+            job_str = (f"🎯 <b>{match_score}% Match</b> | {city}\n"
+                       f"🔹 <b>{title}</b>\n"
+                       f"🏢 {company} ({source})\n"
+                       f"🎓 <i>{accreditation_badge}</i>\n"
+                       f"{restructuring_badge}"
+                       f"💡 <i>{reason}</i>\n"
+                       f"🔗 <a href=\"{url}\">Ansøg her</a>\n\n")
         else:
-            job_str = f"🔹 *{title}*\n🏢 {company} \\({source}\\)\n🎓 _{accreditation_badge}_\n{restructuring_badge}🔗 [Ansøg her]({url})\n\n"
-        
-        if len(current_msg) + len(job_str) > 4000:
+            job_str = (f"🔹 <b>{title}</b>\n"
+                       f"🏢 {company} ({source})\n"
+                       f"🎓 <i>{accreditation_badge}</i>\n"
+                       f"{restructuring_badge}"
+                       f"🔗 <a href=\"{url}\">Ansøg her</a>\n\n")
+
+        if len(current_msg) + len(job_str) > TELEGRAM_MAX_LEN:
             messages.append(current_msg)
             current_msg = job_str
         else:
             current_msg += job_str
-            
+
     if current_msg and jobs:
         messages.append(current_msg)
-        
-    current_msg = "⚠️ *Ændringer opdaget på karrieresider*\n\n" if changed_companies else ""
+
+    # Build company change notifications in HTML format
+    current_msg = "⚠️ <b>Ændringer opdaget på karrieresider</b>\n\n" if changed_companies else ""
     if changed_companies:
-        current_msg += "Strukturen på følgende sider er ændret\\. Der er måske en skjult elevplads:\n\n"
+        current_msg += "Strukturen på følgende sider er ændret. Der er måske en skjult elevplads:\n\n"
         for comp in changed_companies:
-            company = escape_markdown_v2(comp['company'])
-            # URLs must NOT be escaped
+            company = escape_html(comp['company'])
             url = comp['url']
-            comp_str = f"🏢 *{company}*\n🔗 [Tjek manuelt]({url})\n\n"
-            if len(current_msg) + len(comp_str) > 4000:
+            comp_str = f"🏢 <b>{company}</b>\n🔗 <a href=\"{url}\">Tjek manuelt</a>\n\n"
+            if len(current_msg) + len(comp_str) > TELEGRAM_MAX_LEN:
                 messages.append(current_msg)
                 current_msg = comp_str
             else:
                 current_msg += comp_str
-                
+
     if current_msg and changed_companies:
         messages.append(current_msg)
-        
-    if not messages and not news_digest:
+
+    # Guard: skip if nothing to send
+    has_news = news_digest and len(news_digest.strip()) > 10
+    if not messages and not has_news:
         return
 
-    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
     async with httpx.AsyncClient() as client:
         for msg in messages:
-            payload = {
-                "chat_id": config.TELEGRAM_CHAT_ID,
-                "text": msg,
-                "parse_mode": "MarkdownV2",
-                "disable_web_page_preview": True
-            }
-            try:
-                resp = await client.post(url, json=payload, timeout=10.0)
-                if resp.status_code != 200:
-                    logger.error(f"Failed to send telegram notification: {resp.text}")
-                else:
-                    logger.info("Sent Telegram notification successfully.")
-            except Exception as e:
-                logger.error(f"Error sending to telegram: {e}")
-                
-        # Send news digest separately using Markdown (V1) to avoid strict escaping errors
-        if news_digest:
-            payload = {
-                "chat_id": config.TELEGRAM_CHAT_ID,
-                "text": news_digest,
-                "parse_mode": "Markdown",
-                "disable_web_page_preview": True
-            }
-            try:
-                resp = await client.post(url, json=payload, timeout=10.0)
-                if resp.status_code != 200:
-                    logger.error(f"Failed to send telegram news digest: {resp.text}")
-                else:
-                    logger.info("Sent Telegram news digest successfully.")
-            except Exception as e:
-                logger.error(f"Error sending news digest to telegram: {e}")
+            await _send_telegram_message(client, msg, parse_mode="HTML")
+            await asyncio.sleep(0.5)  # Respect Telegram rate limits
+
+        # Send news digest (also HTML now — unified format)
+        if has_news:
+            await _send_telegram_message(client, news_digest, parse_mode="HTML")
 
 async def main():
     import argparse
@@ -254,7 +299,11 @@ async def main():
 
     mode = args.mode
     logger.info(f"Starting scrape run in mode: {mode}")
-    
+
+    # BUG-3 fix: define `now` at top level so it's available in ALL modes
+    now = datetime.now(timezone.utc)
+    now_ts = now.timestamp()  # BUG-4 fix: numeric timestamp for layoff comparisons
+
     state = await load_state()
     state_updated = False
     
@@ -264,7 +313,6 @@ async def main():
         
         old_jobs = {item["job_id"]: item for item in old_jobs_list}
         
-        now = datetime.now(timezone.utc)
         for jid, jdata in old_jobs.items():
             try:
                 discovered = datetime.fromisoformat(jdata.get("discovered_at", now.isoformat()))
@@ -437,12 +485,12 @@ async def main():
         notified_feed_failures = state.get("notified_feed_failures", {})
         for source, count in feed_failures.items():
             if count >= 3 and not notified_feed_failures.get(source):
-                alert_msg = f"⚠️ *Сбой RSS фида*\nИсточник `{source}` не отвечает уже 3 запуска подряд."
+                alert_msg = f"⚠️ <b>Сбой RSS фида</b>\nИсточник <code>{escape_html(source)}</code> не отвечает уже 3 запуска подряд."
                 await notify_telegram([], [], [], alert_msg, [])
                 notified_feed_failures[source] = True
                 state_updated = True
             elif count == 0 and notified_feed_failures.get(source):
-                alert_msg = f"✅ *RSS фид восстановился*\nИсточник `{source}` снова работает."
+                alert_msg = f"✅ <b>RSS фид восстановился</b>\nИсточник <code>{escape_html(source)}</code> снова работает."
                 await notify_telegram([], [], [], alert_msg, [])
                 notified_feed_failures[source] = False
                 state_updated = True
@@ -454,10 +502,11 @@ async def main():
         recent_layoff_alerts = state.get("recent_layoff_alerts", {})
         for comp in restructuring_companies:
             last_alerted = recent_layoff_alerts.get(comp, 0)
-            if now - last_alerted > 7 * 24 * 3600: # 7 days deduplication
-                alert_msg = f"🚨 *ВНИМАНИЕ: СОКРАЩЕНИЯ*\nЗамечены новости о сокращениях/реструктуризации в компании *{comp}*!"
+            if now_ts - last_alerted > 7 * 24 * 3600:  # 7 days deduplication (both are numeric timestamps)
+                comp_escaped = escape_html(comp)
+                alert_msg = f"🚨 <b>ВНИМАНИЕ: СОКРАЩЕНИЯ</b>\nЗамечены новости о сокращениях/реструктуризации в компании <b>{comp_escaped}</b>!"
                 await notify_telegram([], [], [], alert_msg, [])
-                recent_layoff_alerts[comp] = now
+                recent_layoff_alerts[comp] = now_ts
                 state_updated = True
         if "recent_layoff_alerts" not in state or state["recent_layoff_alerts"] != recent_layoff_alerts:
             state["recent_layoff_alerts"] = recent_layoff_alerts

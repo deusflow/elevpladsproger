@@ -361,13 +361,13 @@ async def scrape_jobindex(page: Page) -> list[dict]:
                     postal = postal_match.group(1) if postal_match else ""
                 
                 if is_valid_job(title, postal, company, location_text):
-                    job_id_str = f"{company}_{title}_{url}"
+                    job_id_str = f"{company}_{title}_{job_url}"
                     job_id = hashlib.md5(job_id_str.encode()).hexdigest()
                     jobs.append(format_job(
                         job_id=job_id,
                         title=title,
                         company=company,
-                        url=url,
+                        url=job_url,
                         source="Jobindex"
                     ))
     return jobs
