@@ -473,12 +473,12 @@ async def main():
         if restructuring_companies:
             state["restructuring_companies"] = list(set(state.get("restructuring_companies", []) + restructuring_companies))
             
-        new_used_terms = news_result.get("new_used_terms", [])
+        posted_news_titles = news_result.get("posted_news_titles", [])
         
-        if new_used_terms:
+        if posted_news_titles:
             state_updated = True
-            state["used_terms"] = state.get("used_terms", []) + new_used_terms
-            state["used_terms"] = state["used_terms"][-50:] # prevent infinite growth
+            state["posted_news"] = state.get("posted_news", []) + posted_news_titles
+            state["posted_news"] = state["posted_news"][-30:] # prevent infinite growth
 
         # 1. Feed Health-Check Alerts
         feed_failures = state.get("feed_failures", {})

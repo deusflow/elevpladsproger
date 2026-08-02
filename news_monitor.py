@@ -202,7 +202,7 @@ def validate_format(digest_ru: str) -> bool:
         return False
     return True
 
-def build_quality_fallback_digest(batch: list[dict], used_term: str) -> str:
+def build_quality_fallback_digest(batch: list[dict]) -> str:
     """Build a full-structure Telegram post fallback in HTML if all LLMs are unreachable."""
     if not batch:
         return ""
@@ -216,42 +216,24 @@ def build_quality_fallback_digest(batch: list[dict], used_term: str) -> str:
     if not desc:
         desc = "Ключевые события и технологические изменения в IT-сфере Дании и Европы."
         
-    term_name = _html.escape(used_term or "REST API")
-    
     fallback = (
         f"📰 <b>{title}</b>\n\n"
-        f"📌 <b>Что произошло:</b>\n"
         f"{desc}\n\n"
-        f"⚙️ <b>Техническая суть:</b>\n"
-        f"Подробный разбор и технические детали доступны в первоисточнике публикации.\n\n"
-        f"⚡ <b>Почему это важно:</b>\n"
-        f"Актуальные изменения рынка и технологий напрямую влияют на работу разработчиков и IT-специалистов.\n\n"
-        f'🔗 <a href="{link}">Читать первоисточник</a>\n\n'
-        f"▫️ ▫️ ▫️\n\n"
-        f"💡 <b>IT-Термин недели: {term_name}</b>\n\n"
-        f"Подробности и объяснение этого термина — в следующем выпуске с AI-генерацией."
+        f"Актуальные изменения рынка и технологий напрямую влияют на работу разработчиков и IT-специалистов. Подробный разбор и технические детали доступны в первоисточнике.\n\n"
+        f'🔗 <a href="{link}">Читать полностью</a>\n\n'
+        f"💡 <b>Факт дня:</b> Если все внешние сервисы AI временно недоступны, наша система автоматически генерирует для вас этот резервный выпуск, чтобы вы не пропустили важное!"
     )
     return fallback
 
-async def ask_llm_news(articles: list[dict], target_companies: list[str], used_terms: list[str], seen_news: list[dict] = []) -> dict:
+async def ask_llm_news(articles: list[dict], target_companies: list[str], posted_news: list[str]) -> dict:
     """
     Pass articles to LLM to check for layoffs/restructuring
-    and to generate a single Russian digest post with an educational tech fact.
+    and to generate a single Russian digest post with a random tech fact.
     """
     if (not config.GEMINI_API_KEY and not config.GROQ_API_KEY) or not articles:
-        return {"restructuring_companies": [], "digest_ru": "", "used_term": ""}
+        return {"restructuring_companies": [], "digest_ru": ""}
 
-    # Select an unused tech term
-    available_terms = [t for t in config.TECH_TERMS_POOL if t not in used_terms]
-    if not available_terms:
-        available_terms = config.TECH_TERMS_POOL
-    
-    import random
-    selected_term = random.choice(available_terms)
-
-    # Prepare recent covered topics from seen_news for deduplication & update context
-    recent_seen_titles = [item.get("title", "") for item in reversed(seen_news[-20:]) if item.get("title")]
-    recent_topics_str = "\n".join([f"- {t}" for t in recent_seen_titles[:15]]) if recent_seen_titles else "None"
+    recent_topics_str = "\n".join([f"- {t}" for t in posted_news]) if posted_news else "None"
 
     # Context string (articles list)
     articles_snippet = ""
@@ -267,40 +249,26 @@ Task 1: Check if any of these companies have layoffs/restructuring news: {compan
 
 Task 2: Write ONE Russian tech digest post.
 
-Recently published topics (DO NOT repeat these):
+ALREADY PUBLISHED TOPICS (DO NOT write about these events again):
 {recent_topics_str}
 
-Pick the MOST interesting article. Priority: IT Education in Denmark (EUD, EUX, Datatekniker) > Developer topics (75%) > Tech scene (25%).
-If the topic is an UPDATE to a recent story, prefix headline with "🔄 <b>Дополнение:</b> ".
+Pick the MOST interesting, fresh article. Priority: IT Education in Denmark (EUD, EUX, Datatekniker) > Developer topics (75%) > Tech scene (25%).
+If the topic is an UPDATE to a story in the "ALREADY PUBLISHED" list, prefix headline with "🔄 <b>Дополнение:</b> ".
 
 FORMATTING RULES (Telegram HTML):
 - Use HTML tags: <b>bold</b>, <i>italic</i>, <code>code</code>, <a href="url">text</a>
 - NO Markdown (* or _ or # or ```)!
 - No leading spaces/tabs. Every line starts at column 0.
-- One blank line between sections.
-- Keep emojis EXACTLY as shown in template.
+- Use natural storytelling. Combine the what, how, and why into a cohesive text rather than rigid bullet points.
 
 TEMPLATE (follow EXACTLY):
-[Emoji: 🎓/⚖️/🔄/📰] <b>[Catchy Headline in Russian]</b>
+[Emoji: 🎓/⚖️/🔄/📰/🚀] <b>[Catchy Headline in Russian]</b>
 
-📌 <b>Что произошло:</b>
-[1-2 sentences about the event]
+[2-3 paragraphs of well-written, engaging text explaining the event, the technical details, and its impact on developers or the IT industry. Write naturally, like a good article.]
 
-⚙️ <b>Техническая суть:</b>
-[2-3 technical sentences]
+🔗 <a href="[original_link]">Читать полностью</a>
 
-⚡ <b>Почему это важно:</b>
-[1-2 sentences on impact]
-
-🔗 <a href="[original_link]">Читать первоисточник</a>
-
-▫️ ▫️ ▫️
-
-💡 <b>IT-Термин недели: {selected_term}</b>
-
-[1-2 sentences defining the term]
-• [Key point 1]
-• [Key point 2]
+💡 <b>Факт дня:</b> [1-2 sentences with a completely random, interesting, and unique IT fact, concept, or piece of trivia relevant to developers. MUST be completely different every time you generate a post.]
 
 Articles:
 {articles_snippet}
@@ -308,8 +276,7 @@ Articles:
 Return ONLY valid JSON:
 {{
     "restructuring_companies": ["list of company names or empty list"],
-    "digest_ru": "Your HTML-formatted Telegram post",
-    "used_term": "{selected_term}"
+    "digest_ru": "Your HTML-formatted Telegram post"
 }}"""
 
     # 1. Try Gemini API first if key is available
@@ -419,7 +386,7 @@ Return ONLY valid JSON:
 async def process_news(state: dict, force_post: bool = False) -> dict:
     """Fetch news, analyze with LLM, and return restructuring companies, digest, and used term if new articles found."""
     raw_seen = state.get("seen_news", [])
-    used_terms = state.get("used_terms", [])
+    posted_news = state.get("posted_news", [])
     
     current_time = datetime.now().timestamp()
     seen_news: list[dict[str, Any]] = []
@@ -488,7 +455,7 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
             "restructuring_companies": [], 
             "digests_ru": [], 
             "seen_news": seen_news,
-            "new_used_terms": []
+            "posted_news_titles": []
         }
 
     # Filter out seen articles using topic fingerprint + link matching
@@ -515,34 +482,37 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     
     if not new_articles:
         logger.info("No new news articles to process.")
-        return {"restructuring_companies": [], "digests_ru": [], "seen_news": seen_news, "new_used_terms": []}
+        return {"restructuring_companies": [], "digests_ru": [], "seen_news": seen_news, "posted_news_titles": []}
 
     # Limit to top 10 candidate articles for a single digest post
     articles_to_process = new_articles[:10]
     logger.info(f"Found {len(new_articles)} new articles. Generating 1 single digest post from top {len(articles_to_process)} articles...")
 
-    analysis = await ask_llm_news(articles_to_process, target_company_names, used_terms, seen_news=seen_news)
+    analysis = await ask_llm_news(articles_to_process, target_company_names, posted_news)
     digest_ru = analysis.get("digest_ru", "").strip()
     
     if not digest_ru:
         logger.warning("LLM generation failed for all models. Using high-quality full structure fallback digest.")
-        fallback_term = (set(config.TECH_TERMS_POOL) - set(used_terms)).pop() if (set(config.TECH_TERMS_POOL) - set(used_terms)) else "REST API"
-        digest_ru = build_quality_fallback_digest(articles_to_process, fallback_term)
+        digest_ru = build_quality_fallback_digest(articles_to_process)
         analysis["digest_ru"] = digest_ru
-        analysis["used_term"] = fallback_term
         
     digest_ru = analysis.get("digest_ru", "").strip()
-    new_used_term = analysis.get("used_term", "").strip()
     
     digests_ru = []
-    new_used_terms = []
+    posted_news_titles = []
     restructuring_comps = []
 
     if digest_ru:
         digests_ru.append(digest_ru)
-        if new_used_term:
-            new_used_terms.append(new_used_term)
-            used_terms.append(new_used_term)
+        
+        # Extract headline for future deduplication tracking
+        headline_match = re.search(r'<b>(.*?)</b>', digest_ru)
+        if headline_match:
+            posted_news_titles.append(headline_match.group(1).strip())
+        else:
+            first_line = digest_ru.split('\n')[0][:100] # Fallback to first line
+            posted_news_titles.append(first_line.strip())
+            
         restructuring_comps.extend(analysis.get("restructuring_companies", []))
 
     # CRITICAL FIX: Mark ALL new articles as seen (not just processed ones)
@@ -567,7 +537,7 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         "restructuring_companies": list(set(restructuring_comps)),
         "digests_ru": digests_ru,
         "seen_news": final_seen,
-        "new_used_terms": new_used_terms
+        "posted_news_titles": posted_news_titles
     }
 
 if __name__ == "__main__":
