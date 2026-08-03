@@ -106,4 +106,10 @@ async def enrich_jobs_with_ai(new_jobs: list[dict]):
             logger.info(f"Scored job {job['title']}: {job.get('match_score')}%")
             
     import asyncio
-    await asyncio.gather(*(process_job(job) for job in new_jobs))
+    sem = asyncio.Semaphore(3)
+    
+    async def process_job_with_sem(job):
+        async with sem:
+            await process_job(job)
+            
+    await asyncio.gather(*(process_job_with_sem(job) for job in new_jobs))

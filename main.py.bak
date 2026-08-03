@@ -60,14 +60,13 @@ async def load_state() -> dict[str, Any]:
                         # Merge fallback state if existed
                         if fallback_state:
                             logger.info("Merging local fallback state into Supabase state...")
-                            existing_job_ids = {j["job_id"] for j in state.get("jobs", []) if "job_id" in j}
-                            existing_urls = {j["url"] for j in state.get("jobs", []) if "url" in j}
+                            existing_job_ids = {j["job_id"] for j in state.get("jobs", [])}
                             if "jobs" not in state:
                                 state["jobs"] = []
                             jobs_list = state["jobs"]
                             if isinstance(jobs_list, list):
                                 for fj in fallback_state.get("jobs", []):
-                                    if fj.get("job_id") not in existing_job_ids and fj.get("url") not in existing_urls:
+                                    if fj.get("job_id") not in existing_job_ids:
                                         jobs_list.append(fj)
                                         
                             if "company_hashes" not in state:
@@ -82,7 +81,7 @@ async def load_state() -> dict[str, Any]:
                 except Exception as e:
                     logger.warning(f"Supabase load attempt {attempt}/3 exception: {e}")
                 
-                await asyncio.sleep((2 ** attempt) + random.uniform(0, 1))
+                await asyncio.sleep(2 ** attempt)
                 
             if fallback_state:
                 logger.warning("Supabase load failed completely. Recovering state from local fallback file.")
@@ -116,22 +115,6 @@ async def save_state(state: dict):
             "Prefer": "resolution=merge-duplicates"
         }
         async with httpx.AsyncClient() as client:
-            # Check version for strict optimistic locking before UPSERT
-            try:
-                check_resp = await client.get(f"{SUPABASE_URL}/rest/v1/state?key=eq.scraper_state&select=value", headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=10.0)
-                if check_resp.status_code == 200:
-                    data = check_resp.json()
-                    if data and isinstance(data, list):
-                        db_state = data[0].get("value", {})
-                        if isinstance(db_state, dict):
-                            db_version = db_state.get("_version", 0)
-                            current_version = state.get("_version", 0)
-                            if db_version > current_version:
-                                logger.error(f"Optimistic locking failed! DB version {db_version} > our version {current_version}. Aborting save to prevent data loss.")
-                                return
-            except Exception as e:
-                logger.warning(f"Could not verify state version: {e}")
-                
             for attempt in range(1, 4):
                 try:
                     # Increment version for optimistic locking
@@ -151,7 +134,7 @@ async def save_state(state: dict):
                 except Exception as e:
                     logger.warning(f"Supabase save attempt {attempt}/3 exception: {e}")
                 
-                await asyncio.sleep((2 ** attempt) + random.uniform(0, 1))
+                await asyncio.sleep(2 ** attempt)
                 
         # If all retries failed, save emergency local backup
         logger.error("All Supabase save attempts failed. Writing state to local emergency backup file.")
@@ -211,10 +194,10 @@ async def _send_telegram_message(client: httpx.AsyncClient, text: str, parse_mod
                     await asyncio.sleep(2)
             else:
                 logger.error(f"Telegram error {resp.status_code} (attempt {attempt}/3): {resp.text}")
-                await asyncio.sleep((2 ** attempt) + random.uniform(0, 1))
+                await asyncio.sleep(2 ** attempt)
         except Exception as e:
             logger.error(f"Telegram send exception (attempt {attempt}/3): {e}")
-            await asyncio.sleep((2 ** attempt) + random.uniform(0, 1))
+            await asyncio.sleep(2 ** attempt)
 
     logger.error(f"Failed to send Telegram message after 3 attempts. Message starts with: {text[:100]}...")
     return False

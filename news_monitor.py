@@ -126,7 +126,7 @@ async def fetch_rss(url: str) -> tuple[list[dict], bool]:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
-                feed = feedparser.parse(resp.content)
+                feed = await asyncio.to_thread(feedparser.parse, resp.content)
                 for entry in feed.entries:
                     title = getattr(entry, "title", "")
                     link = getattr(entry, "link", "")
@@ -292,13 +292,13 @@ Return ONLY valid JSON:
                 }
             }
             try:
-                async for attempt in AsyncRetrying(
-                    stop=stop_after_attempt(3),
-                    wait=wait_exponential(multiplier=1.5, min=2, max=10),
-                    reraise=True
-                ):
-                    with attempt:
-                        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+                    async for attempt in AsyncRetrying(
+                        stop=stop_after_attempt(3),
+                        wait=wait_exponential(multiplier=1.5, min=2, max=10),
+                        reraise=True
+                    ):
+                        with attempt:
                             resp = await client.post(url, json=payload)
                             
                             if resp.status_code in [429, 500, 502, 503, 504]:
@@ -348,13 +348,13 @@ Return ONLY valid JSON:
             }
 
             try:
-                async for attempt in AsyncRetrying(
-                    stop=stop_after_attempt(3),
-                    wait=wait_exponential(multiplier=1.5, min=2, max=10),
-                    reraise=True
-                ):
-                    with attempt:
-                        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+                    async for attempt in AsyncRetrying(
+                        stop=stop_after_attempt(3),
+                        wait=wait_exponential(multiplier=1.5, min=2, max=10),
+                        reraise=True
+                    ):
+                        with attempt:
                             resp = await client.post(url, headers=headers, json=payload)
                             
                             if resp.status_code in [429, 500, 502, 503, 504]:
