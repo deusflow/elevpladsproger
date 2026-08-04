@@ -276,6 +276,15 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
 
     if current_msg and jobs:
         messages.append(current_msg)
+        
+    # Append cover letters as separate messages to avoid max length issues
+    for job in jobs:
+        draft = job.get("cover_letter_draft")
+        if draft and len(draft) > 10:
+            title = escape_html(job['title'])
+            company = escape_html(job['company'])
+            draft_msg = f"📝 <b>Udkast til ansøgning</b>\n🏢 {company} - {title}\n\n<code>{escape_html(draft)}</code>"
+            messages.append(draft_msg)
 
     # Build company change notifications in HTML format
     current_msg = "⚠️ <b>Ændringer opdaget på karrieresider</b>\n\n" if changed_companies else ""

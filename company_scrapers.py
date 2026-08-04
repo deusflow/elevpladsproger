@@ -133,6 +133,12 @@ async def _do_scrape_company(page: Page, url: str):
     
     found_jobs: list[dict] = []
     await extract_links_from_frame(page.main_frame, url, found_jobs)
+    
+    # Strip noisy elements to reduce false positive structural changes
+    await page.evaluate("""() => {
+        const noisySelectors = ['header', 'footer', 'nav', 'aside', '.cookie-banner', '#cookie-consent'];
+        document.querySelectorAll(noisySelectors.join(',')).forEach(el => el.remove());
+    }""")
             
     # Target content area or fallback to main/article/body
     content_el = page.locator("main, article, [class*='job'], [class*='career'], [class*='stilling'], [id*='job'], [id*='career']")

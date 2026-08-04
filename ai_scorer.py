@@ -32,15 +32,22 @@ async def fetch_job_text(url: str) -> str:
     return ""
 
 async def get_match_score(title: str, company: str, text: str) -> dict:
-    """Ask Groq LLM to score the job match based on text."""
-    if not config.GROQ_API_KEY:
+    """Ask Gemini LLM (with Groq fallback) to score the job match based on text."""
+    if not config.GEMINI_API_KEY and not config.GROQ_API_KEY:
         return {}
         
     prompt = f"""
     You are an expert IT job match analyzer for Denmark.
     Evaluate this job posting for an IT Apprenticeship (Elevplads) or Trainee role.
-    Target profiles: {", ".join(config.TARGET_KEYWORDS)}
-    Exclude profiles: {", ".join(config.EXCLUDE_KEYWORDS)}
+    
+    Candidate Profile:
+    {config.USER_PROFILE}
+    
+    Cover Letter Template Guide (Use this as the structure and adapt it dynamically for the company):
+    {config.COVER_LETTER_TEMPLATE}
+    
+    Target keywords: {", ".join(config.TARGET_KEYWORDS)}
+    Exclude keywords: {", ".join(config.EXCLUDE_KEYWORDS)}
     
     Job Title: {title}
     Company: {company}
@@ -52,46 +59,73 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
     {{
         "score": 95,
         "city": "Aarhus",
-        "reason": "Perfekt match for IT-elev med fokus på programmering og cybersikkerhed."
+        "reason": "Perfekt match for IT-elev med fokus på programmering og cybersikkerhed.",
+        "cover_letter_draft": "Kære {company}, ..."
     }}
     
     Rules:
-    - "score" must be an integer from 0 to 100 representing how perfectly it matches a Datatekniker / IT-Elev role in Midtjylland. Give 0 if it's explicitly 'IT-supporter', 'Infrastruktur', or non-IT.
+    - "score" must be an integer from 0 to 100 representing how perfectly it matches the Candidate Profile. Give 0 if it's explicitly 'IT-supporter', 'Infrastruktur', or non-IT.
     - "city" must be the city extracted from the text (or "Ukendt" if not found).
     - "reason" must be ONE short Danish sentence summarizing why it's a good/bad match.
+    - "cover_letter_draft": If score > 85, write a professional, compelling draft cover letter (Ansøgning) in Danish based on the Candidate Profile and Job Description. If score <= 85, return an empty string "". DO NOT output markdown blocks around the JSON.
     """
     
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {config.GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "llama-3.1-8b-instant",
-        "messages": [
-            {"role": "system", "content": "You are a JSON-only job evaluator. Return ONLY valid JSON."},
-            {"role": "user", "content": prompt}
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.1
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code == 200:
-                content = resp.json()["choices"][0]["message"]["content"]
-                return json.loads(content)
-            else:
-                logger.warning(f"Groq API scoring error {resp.status_code}: {resp.text}")
-    except Exception as e:
-        logger.error(f"Groq API exception during scoring: {e}")
+    # Try Gemini first
+    if config.GEMINI_API_KEY:
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={config.GEMINI_API_KEY}"
+        gemini_payload = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }],
+            "generationConfig": {
+                "response_mime_type": "application/json"
+            }
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(gemini_url, json=gemini_payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data["candidates"][0]["content"]["parts"][0]["text"]
+                    return json.loads(content)
+                else:
+                    logger.warning(f"Gemini API scoring error {resp.status_code}: {resp.text}")
+        except Exception as e:
+            logger.error(f"Gemini API exception during scoring: {e}")
+            
+    # Fallback to Groq
+    if config.GROQ_API_KEY:
+        groq_url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {config.GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama-3.1-8b-instant",
+            "messages": [
+                {"role": "system", "content": "You are a JSON-only job evaluator. Return ONLY valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(groq_url, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    content = resp.json()["choices"][0]["message"]["content"]
+                    return json.loads(content)
+                else:
+                    logger.warning(f"Groq API scoring error {resp.status_code}: {resp.text}")
+        except Exception as e:
+            logger.error(f"Groq API exception during scoring: {e}")
     
     return {}
     
 async def enrich_jobs_with_ai(new_jobs: list[dict]):
     """Fetch text and score each new job asynchronously."""
-    if not new_jobs or not config.GROQ_API_KEY:
+    if not new_jobs or (not config.GEMINI_API_KEY and not config.GROQ_API_KEY):
         return
         
     logger.info(f"Enriching {len(new_jobs)} new jobs with AI match score...")
@@ -103,6 +137,7 @@ async def enrich_jobs_with_ai(new_jobs: list[dict]):
             job["match_score"] = score_data.get("score")
             job["match_city"] = score_data.get("city")
             job["match_reason"] = score_data.get("reason")
+            job["cover_letter_draft"] = score_data.get("cover_letter_draft", "")
             logger.info(f"Scored job {job['title']}: {job.get('match_score')}%")
             
     import asyncio

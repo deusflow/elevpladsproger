@@ -24,6 +24,67 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# User Profile for personalized Cover Letter generation & Scoring
+USER_PROFILE = """
+Oleh Reznychenko
+Data Technician Apprentice – Specialization in Programming
+
+SUMMARY
+Building systems that users actually want to use every day is my approach to learning. As a Data Technician apprentice, I run an automated news bot with 300+ daily users, developed in Go, C#, and GitHub Actions. My goal now is to find a permanent employer in Denmark where I can keep growing as a developer and contribute to real production systems.
+
+KOMPETENCER
+• Programmering: Go, C#, SQL, Python
+• DevOps og cloud: Docker, GitHub Actions, CI/CD, VPS
+• IT Security & Networking: Cybersecurity, Active Directory, SSH, DNS
+• Languages: Danish, English, Ukrainian/Russian (native), Polish
+• Frameworks & Tools: ASP.NET Core, FastAPI, Hugo
+
+EDUCATION
+Mercantec, Viborg 8800, Danmark
+Datateknikker – Programmering (forventet afslutning: Juni 2029.)
+• GF2 – Data og kommunikation (afsluttet januar 2025)
+
+PROJECTS
+1. Hotel Management System (H2 Project) Full-stack .NET 9 solution focused on backend architecture and security.
+• Backend: REST API in ASP.NET Core, JWT, BCrypt, RBAC.
+• Database: Entity Framework Core.
+• DevOps: Docker Compose.
+
+2. Automated News Platform (Telegram + Web)
+• Backend in Go: RSS ingestion, HTML scraping, API integration
+• AI pipeline: translation, summarization, structured output
+• Database: PostgreSQL & Supabase
+• DevOps: CI/CD (GitHub Actions)
+
+WORK EXPERIENCE
+Mercantec (elev) Danmark
+Data Technician – Programming Specialization (February 2025 – Present)
+• Core focus: C# Development, Automation, and Database Structures.
+• Built a production-ready news aggregation bot.
+"""
+
+COVER_LETTER_TEMPLATE = """
+Datatekniker-elev med speciale i programmering søger elevplads i Danmark 
+
+Oleh Reznychenko 
+Viborg | 50 30 21 70 | deusflow@proton.me| linkedin.com/in/deusflow | deusflow.github.io/curriculumvitae 
+
+Hej [Contact Person/Team] hos [Company Name], 
+
+[Opening hook: E.g., Jeg søger hermed stillingen som programmørelev hos jer, fordi...]
+
+Jeg har afsluttet GF2 som datatekniker med speciale i programmering og er i øjeblikket i praktik på Mercantecs skoleoplæringscenter, mens jeg søger en fast elevplads. Jeg lærer bedst, når jeg bygger ting, der rent faktisk bliver brugt, ikke kun til eksamen. 
+
+Et godt eksempel er min automatiserede nyhedsplatform: en bot der indsamler, opsummerer og publicerer indhold på tværs af Telegram og web via et CI/CD-setup med GitHub Actions, Go i backend og PostgreSQL til datahåndtering. Den bruges i dag af 400+ daglige brugere og kører uden manuel indgriben. For mig er det et bevis på, at jeg kan tage et projekt fra idé til produktion. 
+
+Det, der tiltrækker mig ved netop denne elevplads hos [Company Name], er [Specific reason related to the job description]. 
+
+Jeg er klar til samtale når det passer jer og ser frem til at høre fra jer. 
+
+De bedste hilsner  
+Oleh Reznychenko 
+"""
+
 MIDTJYLLAND_CITIES = [
     "aarhus", "randers", "silkeborg", "horsens", "herning", 
     "viborg", "holstebro", "skive", "ikast", "brande", 
