@@ -7,6 +7,22 @@ from typing import Any
 
 logger = logging.getLogger("elevplads_scraper")
 
+def extract_json_payload(text_content: str) -> dict:
+    """Extract and parse JSON object from LLM response text, stripping markdown codeblocks if present."""
+    text_content = text_content.strip()
+    if text_content.startswith("```"):
+        lines = text_content.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        text_content = "\n".join(lines).strip()
+    start = text_content.find("{")
+    end = text_content.rfind("}")
+    if start != -1 and end != -1:
+        text_content = text_content[start:end+1]
+    return json.loads(text_content, strict=False)
+
 async def fetch_job_text(url: str) -> str:
     """Fetch job URL and extract text using regex, skipping JS/CSS."""
     try:
@@ -72,7 +88,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
     
     # Try Gemini first
     if config.GEMINI_API_KEY:
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={config.GEMINI_API_KEY}"
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={config.GEMINI_API_KEY}"
         gemini_payload = {
             "contents": [{
                 "parts": [{"text": prompt}]
@@ -87,7 +103,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
                 if resp.status_code == 200:
                     data = resp.json()
                     content = data["candidates"][0]["content"]["parts"][0]["text"]
-                    return json.loads(content)
+                    return extract_json_payload(content)
                 else:
                     logger.warning(f"Gemini API scoring error {resp.status_code}: {resp.text}")
         except Exception as e:
@@ -115,7 +131,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
                 resp = await client.post(groq_url, headers=headers, json=payload)
                 if resp.status_code == 200:
                     content = resp.json()["choices"][0]["message"]["content"]
-                    return json.loads(content)
+                    return extract_json_payload(content)
                 else:
                     logger.warning(f"Groq API scoring error {resp.status_code}: {resp.text}")
         except Exception as e:

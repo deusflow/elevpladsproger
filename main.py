@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from patchright.async_api import async_playwright
 import random
 from playwright_stealth import stealth_async
-import accreditation_checker
+import company_validator
 import proff_scraper
 
 import scrapers
@@ -243,9 +243,9 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
         source = escape_html(job['source'])
         url = job['url']
 
-        # Check accreditation
-        is_approved = await accreditation_checker.check_accreditation(job['company'])
-        accreditation_badge = "✅ Godkendt lærested: Datatekniker" if is_approved else "⚠️ Status ukendt / Kræver godkendelse"
+        # Check validation
+        is_approved = await company_validator.check_accreditation(job['company'])
+        accreditation_badge = "✅ Verificeret IT-virksomhed (CVR)" if is_approved else "⚠️ Ukendt CVR-status"
 
         is_restructuring = restructuring_companies and job['company'] in restructuring_companies
         restructuring_badge = "⚠️ <b>Компания проходит реструктуризацию/увольнения!</b>\n" if is_restructuring else ""

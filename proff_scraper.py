@@ -25,24 +25,23 @@ async def discover_it_companies(context: BrowserContext) -> list[dict]:
         await page.goto(search_url, wait_until="networkidle", timeout=30000)
         await page.wait_for_timeout(3000)
         
-        # Extract company names and profile links from search results
-        # Proff typically uses <a> tags inside <h2> or specific classes for company names
-        elements = await page.locator("a").all()
-        for el in elements:
-            try:
-                href = await el.get_attribute("href")
-                if href and "/virksomhed/" in href:
-                    name = await el.inner_text()
-                    name = name.strip()
-                    if name and len(name) > 2 and name not in [d["name"] for d in discovered]:
-                        discovered.append({
-                            "name": name,
-                            "url": "", # Website URL needs to be resolved from profile or DuckDuckGo
-                            "proff_url": f"https://www.proff.dk{href}" if href.startswith("/") else href
-                        })
-            except Exception as pe:
-                logger.debug(f"Failed parsing proff element: {pe}")
-                continue
+        # Extract company names and profile links from search results in one fast browser evaluation
+        links_data = await page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('a')).map(a => ({
+                text: (a.innerText || a.textContent || '').trim(),
+                href: a.getAttribute('href') || ''
+            })).filter(l => l.text.length > 2 && l.href.includes('/virksomhed/'));
+        }""")
+        
+        for link in links_data:
+            name = link["text"]
+            href = link["href"]
+            if name not in [d["name"] for d in discovered]:
+                discovered.append({
+                    "name": name,
+                    "url": "", # Website URL needs to be resolved from profile or DuckDuckGo
+                    "proff_url": f"https://www.proff.dk{href}" if href.startswith("/") else href
+                })
                 
     except Exception as e:
         logger.error(f"Error scraping Proff.dk: {e}")
