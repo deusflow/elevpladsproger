@@ -129,6 +129,8 @@ async def fetch_rss(url: str) -> tuple[list[dict], bool]:
                 feed = await asyncio.to_thread(feedparser.parse, resp.content)
                 for entry in feed.entries:
                     title = getattr(entry, "title", "")
+                    # Strip any HTML tags from titles (some feeds like debat/rss leak raw HTML)
+                    title = re.sub(r'<[^>]+>', '', title).strip()
                     link = getattr(entry, "link", "")
                     description = getattr(entry, "description", getattr(entry, "summary", ""))
                     published = getattr(entry, "published_parsed", None)
@@ -176,7 +178,7 @@ async def autograde_digest(digest_ru: str, snippets: str) -> bool:
     """Check for hallucinations. Returns False if digest is severely hallucinated."""
     if not config.GEMINI_API_KEY:
         return True
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={config.GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={config.GEMINI_API_KEY}"
     prompt = f"Source text:\n{snippets}\n\nGenerated text:\n{digest_ru}\n\nDoes the generated text invent fake companies, fake URLs, or completely fabricated facts? Reply 'FAIL' only if severely hallucinated, otherwise reply 'OK'."
     payload: dict[str, Any] = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
@@ -228,12 +230,29 @@ def build_quality_fallback_digest(batch: list[dict]) -> str:
 async def ask_llm_news(articles: list[dict], target_companies: list[str], posted_news: list[str]) -> dict:
     """
     Pass articles to LLM to check for layoffs/restructuring
-    and to generate a single Russian digest post with a random tech fact.
+    and to generate a single Russian digest post with a practical dev tip.
     """
     if (not config.GEMINI_API_KEY and not config.GROQ_API_KEY) or not articles:
         return {"restructuring_companies": [], "digest_ru": ""}
 
-    recent_topics_str = "\n".join([f"- {t}" for t in posted_news]) if posted_news else "None"
+    # Split posted_news into headlines and tips for separate dedup
+    recent_headlines = [t for t in posted_news if not t.startswith("TIP:")]
+    recent_tips = [t.removeprefix("TIP:").strip() for t in posted_news if t.startswith("TIP:")]
+    
+    recent_topics_str = "\n".join([f"- {t}" for t in recent_headlines[-15:]]) if recent_headlines else "None"
+    recent_tips_str = "\n".join([f"- {t}" for t in recent_tips[-10:]]) if recent_tips else "None"
+
+    # Pick a random category for the tip to ensure variety
+    import random
+    tip_categories = [
+        "Полезный инструмент или библиотека для разработчика (например: CLI-утилита, VS Code расширение, npm/pip пакет)",
+        "Новая технология или концепция в AI/ML (например: новый подход в fine-tuning, RAG, агентные фреймворки)",
+        "Паттерн проектирования или архитектурная концепция (например: CQRS, Event Sourcing, чистая архитектура)",
+        "Практический совет по карьере в IT (собеседования, soft skills, рост, менторство)",
+        "Малоизвестный исторический факт из мира IT (пасхалки, истории создания технологий, курьёзы)",
+        "Полезная техника программирования (например: дебаг-приём, оптимизация, работа с Git)",
+    ]
+    selected_category = random.choice(tip_categories)
 
     # Context string (articles list)
     articles_snippet = ""
@@ -249,8 +268,11 @@ Task 1: Check if any of these companies have layoffs/restructuring news: {compan
 
 Task 2: Write ONE Russian tech digest post.
 
-ALREADY PUBLISHED TOPICS (DO NOT write about these events again):
+ALREADY PUBLISHED HEADLINES (DO NOT write about these events again):
 {recent_topics_str}
+
+ALREADY PUBLISHED TIPS (DO NOT repeat these tips, tools, or concepts):
+{recent_tips_str}
 
 Pick the MOST interesting, fresh article. Priority: IT Education in Denmark (EUD, EUX, Datatekniker) > Developer topics (75%) > Tech scene (25%).
 If the topic is an UPDATE to a story in the "ALREADY PUBLISHED" list, prefix headline with "🔄 <b>Дополнение:</b> ".
@@ -268,7 +290,7 @@ TEMPLATE (follow EXACTLY):
 
 🔗 <a href="[original_link]">Читать полностью</a>
 
-💡 <b>Факт дня:</b> [1-2 sentences with a completely random, interesting, and unique IT fact, concept, or piece of trivia relevant to developers. MUST be completely different every time you generate a post.]
+💡 <b>Полезно знать:</b> [1-2 sentences. Category for THIS post: {selected_category}. Write something practical and actionable from this category. It must be COMPLETELY DIFFERENT from everything in the "ALREADY PUBLISHED TIPS" list above.]
 
 Articles:
 {articles_snippet}
@@ -281,7 +303,7 @@ Return ONLY valid JSON:
 
     # 1. Try Gemini API first if key is available
     if config.GEMINI_API_KEY:
-        gemini_models = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-2.0-flash"]
+        gemini_models = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
         for g_model in gemini_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             payload: dict[str, Any] = {
@@ -512,6 +534,11 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         else:
             first_line = digest_ru.split('\n')[0][:100] # Fallback to first line
             posted_news_titles.append(first_line.strip())
+        
+        # Extract the "Полезно знать" tip text for separate tip deduplication
+        tip_match = re.search(r'Полезно знать:</b>\s*(.+?)(?:\n|$)', digest_ru)
+        if tip_match:
+            posted_news_titles.append(f"TIP:{tip_match.group(1).strip()}")
             
         restructuring_comps.extend(analysis.get("restructuring_companies", []))
 

@@ -132,7 +132,6 @@ TARGET_KEYWORD_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, TARGET_KE
 RSS_FEEDS = {
     "Version2 News": "https://www.version2.dk/rss",
     "Version2 Blogs": "https://www.version2.dk/blogs/rss",
-    "Version2 Debat": "https://www.version2.dk/debat/rss",
     "Computerworld": "https://www.computerworld.dk/rss/all",
     "CPH Post Tech": "https://cphpost.dk/category/news/technology/feed/",
     "Studie+ EUD": "https://info.studieplus.dk/category/EUD-nyhed/feed/",
