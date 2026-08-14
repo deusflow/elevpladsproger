@@ -25,7 +25,8 @@ def with_error_screenshot(scraper_name: str):
                     await page.screenshot(path=f"screenshots/{safe_name}_error.png")
                 except Exception as se:
                     logger.error(f"Could not take screenshot for {scraper_name}: {se}")
-                return []
+                # Return error marker so main.py can track scraper health
+                return [{"type": "scraper_error", "source": scraper_name, "error": str(e)}]
         return wrapper
     return decorator
 
@@ -195,18 +196,24 @@ async def scrape_itjobbank(page: Page) -> list[dict]:
     for q in config.JOB_QUERIES:
         for page_num in range(1, 4):  # Check up to 3 pages
             url = f"https://www.it-jobbank.dk/job/midtjylland?q={q}&page={page_num}"
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
             try:
-                await page.wait_for_selector(".job-search-result, .job-item, .result-item", timeout=5000)
+                await page.wait_for_selector(".job-search-result, .job-item, .result-item", timeout=15000)
             except Exception as e:
-                if page_num == 1:
-                    logger.info(f"No job results found on IT-Jobbank for query '{q}'. Taking screenshot.")
-                    try:
-                        os.makedirs("screenshots", exist_ok=True)
-                        await page.screenshot(path=f"screenshots/empty_itjobbank_{q}.png")
-                    except Exception as se:
-                        logger.debug(f"Screenshot failed for IT-Jobbank: {se}")
+                # Distinguish "no results" from "site changed layout"
+                page_text = await page.inner_text("body")
+                if "ingen" in page_text.lower() or "0 job" in page_text.lower():
+                    if page_num == 1:
+                        logger.info(f"IT-Jobbank confirmed 0 results for query '{q}'.")
+                else:
+                    if page_num == 1:
+                        logger.warning(f"IT-Jobbank selectors not found for query '{q}' — site may have changed layout. Error: {e}")
+                        try:
+                            os.makedirs("screenshots", exist_ok=True)
+                            await page.screenshot(path=f"screenshots/empty_itjobbank_{q}.png")
+                        except Exception as se:
+                            logger.debug(f"Screenshot failed for IT-Jobbank: {se}")
                 break  # Stop paginating if no results
 
             listings = await page.locator(".job-item, .result-item").all()
@@ -251,9 +258,9 @@ async def scrape_thehub() -> list[dict]:
     jobs = []
     try:
         logger.info("Scraping TheHub.io...")
-        api_url = "https://thehub.io/api/jobs"
+        api_url = "https://api.thehub.io/v2/jobs"
         headers = {
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json"
         }
         
@@ -264,13 +271,15 @@ async def scrape_thehub() -> list[dict]:
         async with httpx.AsyncClient(**client_kwargs) as client:
             # Search for both 'elev' and 'datatekniker'
             for term in ["elev", "datatekniker"]:
-                params = {"countryCode": "DK", "search": term}
+                params = {"countryCode": "DK", "search": term, "limit": 50}
                 resp = await client.get(api_url, params=params, headers=headers)
                 if resp.status_code != 200:
+                    logger.warning(f"TheHub API v2 returned {resp.status_code} for search='{term}'")
                     continue
                     
                 data = resp.json()
                 docs = data.get("docs", [])
+                logger.info(f"TheHub API v2 returned {len(docs)} results for search='{term}'")
                 
                 for item in docs:
                     title = item.get("title", "")
@@ -278,21 +287,19 @@ async def scrape_thehub() -> list[dict]:
                     company = company_data.get("name", "Ukendt") if isinstance(company_data, dict) else "Ukendt"
                     
                     postal = ""
-                    locations = item.get("location")
-                    if isinstance(locations, dict):
-                        locations = [locations]
-                    if isinstance(locations, list):
-                        for loc in locations:
-                            if isinstance(loc, dict) and loc.get("country") == "Denmark":
-                                postal = str(loc.get("postalCode", ""))
-                                break
+                    location = item.get("location")
+                    locations = [location] if isinstance(location, dict) else (location if isinstance(location, list) else [])
+                    for loc in locations:
+                        if isinstance(loc, dict) and loc.get("country") == "Denmark":
+                            postal = str(loc.get("postalCode", ""))
+                            break
                             
-                    job_id = str(item.get("key", ""))
-                    slug = item.get("slug", "")
-                    company_slug = company_data.get("slug", "") if isinstance(company_data, dict) else ""
+                    job_id = str(item.get("id", item.get("key", "")))
+                    job_key = item.get("key", "")
+                    company_key = company_data.get("key", "") if isinstance(company_data, dict) else ""
                     
-                    if slug and company_slug:
-                        url = f"https://thehub.io/jobs/{company_slug}/{slug}"
+                    if job_key and company_key:
+                        url = f"https://thehub.io/jobs/{company_key}/{job_key}"
                     else:
                         url = f"https://thehub.io/jobs?jobId={job_id}"
                     
@@ -307,6 +314,7 @@ async def scrape_thehub() -> list[dict]:
                         ))
     except Exception as e:
         logger.error(f"Error in TheHub scraper: {e}")
+        return [{"type": "scraper_error", "source": "TheHub", "error": str(e)}]
     return jobs
 
 @with_error_screenshot("Jobindex")
@@ -316,25 +324,32 @@ async def scrape_jobindex(page: Page) -> list[dict]:
     for q in config.JOB_QUERIES:
         for page_num in range(1, 4): # check up to 3 pages
             url = f"https://www.jobindex.dk/jobsoegning/it/midtjylland?q={q}&page={page_num}"
-            await page.goto(url, timeout=30000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             try:
-                await page.wait_for_selector(".jobsearch-result", timeout=10000)
+                # PaidJob is the primary class used in Jobindex SSR rendering
+                await page.wait_for_selector(".PaidJob, .jobsearch-result", timeout=15000)
             except Exception as e:
-                if page_num == 1:
-                    logger.warning(f"No jobsearch-result found on Jobindex for query '{q}'.")
-                    try:
-                        os.makedirs("screenshots", exist_ok=True)
-                        await page.screenshot(path=f"screenshots/empty_jobindex_{q}.png")
-                    except Exception as se:
-                        logger.debug(f"Screenshot failed for Jobindex: {se}")
+                # Distinguish "no results" from "site changed layout"
+                page_text = await page.inner_text("body")
+                if "ingen resultater" in page_text.lower() or "0 job" in page_text.lower() or "ingen ledige" in page_text.lower():
+                    if page_num == 1:
+                        logger.info(f"Jobindex confirmed 0 results for query '{q}'.")
+                else:
+                    if page_num == 1:
+                        logger.warning(f"Jobindex selectors not found for query '{q}' — site may have changed layout. Error: {e}")
+                        try:
+                            os.makedirs("screenshots", exist_ok=True)
+                            await page.screenshot(path=f"screenshots/empty_jobindex_{q}.png")
+                        except Exception as se:
+                            logger.debug(f"Screenshot failed for Jobindex: {se}")
                 break
                 
-            listings = await page.locator(".jobsearch-result").all()
+            listings = await page.locator(".PaidJob, .jobsearch-result").all()
             if not listings:
                 break
                 
             for listing in listings:
-                title_el = listing.locator("h4 a").first
+                title_el = listing.locator("h4 a, h3 a, .job-title a").first
                 if not await title_el.count():
                     continue
                     
@@ -347,7 +362,7 @@ async def scrape_jobindex(page: Page) -> list[dict]:
                     job_url = job_url.split("?")[0]
                 
                 company = "Ukendt"
-                company_el = listing.locator(".jix_robotjob--company strong, .company-name").first
+                company_el = listing.locator(".jix_robotjob--company strong, .company-name, [class*='company'] strong").first
                 if await company_el.count():
                     company = await company_el.inner_text()
                     

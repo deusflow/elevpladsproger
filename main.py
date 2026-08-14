@@ -425,7 +425,36 @@ async def main():
             finally:
                 await browser.close()
 
-        # Process items (Jobs vs Hashes)
+        # Separate scraper errors from valid items (Jobs vs Hashes)
+        scraper_errors = [item for item in all_items if item.get("type") == "scraper_error"]
+        valid_items = [item for item in all_items if item.get("type") != "scraper_error"]
+        
+        # Track Scraper Health
+        KNOWN_JOB_SOURCES = ["TheHub", "Elevplads", "Laerepladsen", "Jobnet", "Jobindex", "IT-Jobbank"]
+        scraper_failures = state.get("scraper_failures", {})
+        notified_scraper_failures = state.get("notified_scraper_failures", {})
+        errors_by_source = {err["source"]: err.get("error", "Unknown error") for err in scraper_errors}
+
+        for src in KNOWN_JOB_SOURCES:
+            if src in errors_by_source:
+                scraper_failures[src] = scraper_failures.get(src, 0) + 1
+                if scraper_failures[src] >= 3 and not notified_scraper_failures.get(src):
+                    err_text = errors_by_source[src]
+                    alert_msg = f"⚠️ <b>Сбой источника вакансий</b>\nСкрейпер <code>{escape_html(src)}</code> падает уже 3 запуска подряд:\n<code>{escape_html(err_text)}</code>"
+                    await notify_telegram([], [], [], alert_msg, [])
+                    notified_scraper_failures[src] = True
+                    state_updated = True
+            else:
+                if scraper_failures.get(src, 0) > 0 and notified_scraper_failures.get(src):
+                    alert_msg = f"✅ <b>Источник вакансий восстановился</b>\nСкрейпер <code>{escape_html(src)}</code> снова успешно собирает данные."
+                    await notify_telegram([], [], [], alert_msg, [])
+                    notified_scraper_failures[src] = False
+                    state_updated = True
+                scraper_failures[src] = 0
+
+        state["scraper_failures"] = scraper_failures
+        state["notified_scraper_failures"] = notified_scraper_failures
+
         existing_ids = {jid for jid, j in old_jobs.items()}
         new_jobs = []
         changed_companies = []
@@ -437,7 +466,7 @@ async def main():
             key = (jdata.get("company", "").lower().strip(), jdata.get("title", "").lower().strip())
             seen_titles.add(key)
         
-        for item in all_items:
+        for item in valid_items:
             if item.get("type") == "hash":
                 c_name = item["company"]
                 c_hash = item["hash"]

@@ -237,13 +237,9 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
         return jobs
 
 async def scrape_custom_companies(context: BrowserContext, dynamic_companies: Optional[list[dict]] = None) -> list[dict]:
-    jobs: list[dict] = []
-    try:
-        with open("target_companies.json", "r", encoding="utf-8") as f:
-            companies = json.load(f)
-    except Exception as e:
-        logger.error(f"Could not load target_companies.json: {e}")
-        companies = []
+    # Fail fast if target_companies.json is missing or corrupted
+    with open("target_companies.json", "r", encoding="utf-8") as f:
+        companies = json.load(f)
 
     if dynamic_companies:
         # Avoid duplicates by name

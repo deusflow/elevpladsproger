@@ -423,14 +423,10 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
             if current_time - item_time <= 864000: # 10 days in seconds
                 seen_news.append(item)
     
-    # Collect all target companies
+    # Collect all target companies (fail fast if configuration is corrupted)
     import json as json_lib
-    target_companies = []
-    try:
-        with open("target_companies.json", "r", encoding="utf-8") as f:
-            target_companies = json_lib.load(f)
-    except:
-        pass
+    with open("target_companies.json", "r", encoding="utf-8") as f:
+        target_companies = json_lib.load(f)
     
     target_company_names = [c["name"] for c in target_companies]
     target_company_names.extend([c["name"] for c in state.get("dynamic_companies", [])])
