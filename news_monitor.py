@@ -350,7 +350,7 @@ Return ONLY valid JSON:
 
     # 2. Fallback to Groq API if Gemini is unavailable or fails
     if config.GROQ_API_KEY:
-        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+        models_to_try = ["openai/gpt-oss-120b", "llama-3.1-8b-instant"]
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {config.GROQ_API_KEY}",
