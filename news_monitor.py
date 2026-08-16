@@ -311,12 +311,18 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], posted
         return art_copy
 
     logger.info("Fetching full article texts for candidate news...")
-    enriched_articles = await asyncio.gather(*[enrich_article(a) for a in articles[:6]])
-    for a in articles[6:]:
+    enriched_articles = await asyncio.gather(*[enrich_article(a) for a in articles[:8]])
+    for a in articles[8:]:
         art_copy = dict(a)
         art_copy["body"] = ""
         art_copy["is_paywalled"] = False
         enriched_articles.append(art_copy)
+
+    # Prioritize completely free, full-text articles over paywalled snippets
+    enriched_articles.sort(
+        key=lambda a: (1 if (not a.get("is_paywalled") and len(a.get("body", "")) > 500) else 0),
+        reverse=True
+    )
 
     # Build context string with full text
     articles_snippet = ""
