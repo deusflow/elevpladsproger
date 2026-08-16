@@ -134,7 +134,6 @@ RSS_FEEDS = {
     "Version2 Blogs": "https://www.version2.dk/blogs/rss",
     "Computerworld": "https://www.computerworld.dk/rss/all",
     "CPH Post Tech": "https://cphpost.dk/category/news/technology/feed/",
-    "Studie+ EUD": "https://info.studieplus.dk/category/EUD-nyhed/feed/",
     "Videnskab.dk Tech": "https://videnskab.dk/wp-json/rss/v1/feeds?topics=teknologi"
 }
 

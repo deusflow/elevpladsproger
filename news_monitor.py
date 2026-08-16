@@ -158,6 +158,45 @@ async def fetch_rss(url: str) -> tuple[list[dict], bool]:
         logger.error(f"Failed to fetch RSS from {url}: {e}")
         return [], False
 
+async def fetch_article_content(url: str) -> tuple[str, bool]:
+    """
+    Fetches the web page content of an article, strips boilerplate/nav/ads,
+    and checks for paywall indicators. Returns (clean_text, is_paywalled).
+    """
+    if not url or not url.startswith("http"):
+        return "", False
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        }
+        client_kwargs: dict[str, Any] = {"timeout": 12.0, "follow_redirects": True}
+        if config.PROXY_URL:
+            client_kwargs["proxy"] = config.PROXY_URL
+            
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                html = resp.text
+                # Remove scripts, styles, head, svg, nav, footer, header, aside, form
+                html = re.sub(r'<(script|style|head|svg|nav|footer|header|aside|form)[^>]*>.*?</\1>', ' ', html, flags=re.IGNORECASE | re.DOTALL)
+                text = re.sub(r'<[^>]+>', ' ', html)
+                text = re.sub(r'\s+', ' ', text).strip()
+                
+                # Check for paywall indicators
+                text_lower = text.lower()
+                paywall_keywords = [
+                    "kun for abonnenter", "kræver abonnement", "køb abonnement",
+                    "tilmeld dig for at læse", "lås artiklen op", "er forbeholdt abonnenter",
+                    "bliv abonnent", "dette indhold er låst", "premium-artikel"
+                ]
+                is_paywalled = any(pw in text_lower for pw in paywall_keywords)
+                
+                # Return first 3500 chars of clean substantive text
+                return text[:3500], is_paywalled
+    except Exception as e:
+        logger.debug(f"Could not fetch full article text for {url}: {e}")
+    return "", False
+
 def extract_json_payload(text_content: str) -> dict:
     """Extract and parse JSON object from LLM response text, stripping markdown codeblocks if present."""
     text_content = text_content.strip()
@@ -175,11 +214,20 @@ def extract_json_payload(text_content: str) -> dict:
     return json.loads(text_content, strict=False)
 
 async def autograde_digest(digest_ru: str, snippets: str) -> bool:
-    """Check for hallucinations. Returns False if digest is severely hallucinated."""
+    """Check for hallucinations, fabricated courses, and ungrounded claims. Returns False if digest is hallucinated."""
     if not config.GEMINI_API_KEY:
         return True
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={config.GEMINI_API_KEY}"
-    prompt = f"Source text:\n{snippets}\n\nGenerated text:\n{digest_ru}\n\nDoes the generated text invent fake companies, fake URLs, or completely fabricated facts? Reply 'FAIL' only if severely hallucinated, otherwise reply 'OK'."
+    prompt = f"""Source article text:
+{snippets[:4000]}
+
+Generated Russian Telegram post:
+{digest_ru}
+
+Fact-Check Task:
+Compare the generated Russian text against the source text.
+Does the generated text invent fake facts, unmentioned educational courses/modules, non-existent AI/DevOps tools, or invent claims not supported by the source text?
+Reply 'FAIL' if the post invents ungrounded facts or distorts the source. Reply 'OK' if the post is factually faithful to the source text."""
     payload: dict[str, Any] = {"contents": [{"parts": [{"text": prompt}]}]}
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -187,7 +235,7 @@ async def autograde_digest(digest_ru: str, snippets: str) -> bool:
             if resp.status_code == 200:
                 res = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
                 if "FAIL" in res.upper():
-                    logger.warning(f"Autograder BLOCKED digest: {res}")
+                    logger.warning(f"Autograder BLOCKED hallucinated digest: {res}")
                     return False
     except Exception as e:
         logger.warning(f"Autograder check error (allowing digest): {e}")
@@ -223,14 +271,14 @@ def build_quality_fallback_digest(batch: list[dict]) -> str:
         f"{desc}\n\n"
         f"Актуальные изменения рынка и технологий напрямую влияют на работу разработчиков и IT-специалистов. Подробный разбор и технические детали доступны в первоисточнике.\n\n"
         f'🔗 <a href="{link}">Читать полностью</a>\n\n'
-        f"💡 <b>Факт дня:</b> Если все внешние сервисы AI временно недоступны, наша система автоматически генерирует для вас этот резервный выпуск, чтобы вы не пропустили важное!"
+        f"💡 <b>Полезно знать:</b> Если внешние сервисы AI временно недоступны, система автоматически публикует этот краткий выпуск, чтобы вы не пропустили важное."
     )
     return fallback
 
 async def ask_llm_news(articles: list[dict], target_companies: list[str], posted_news: list[str]) -> dict:
     """
     Pass articles to LLM to check for layoffs/restructuring
-    and to generate a single Russian digest post with a practical dev tip.
+    and to generate a single Russian digest post with strict factual grounding.
     """
     if (not config.GEMINI_API_KEY and not config.GROQ_API_KEY) or not articles:
         return {"restructuring_companies": [], "digest_ru": ""}
@@ -254,11 +302,35 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], posted
     ]
     selected_category = random.choice(tip_categories)
 
-    # Context string (articles list)
+    # Enrich candidate articles with real webpage text in parallel
+    async def enrich_article(art: dict) -> dict:
+        body, is_paywalled = await fetch_article_content(art.get("link", ""))
+        art_copy = dict(art)
+        art_copy["body"] = body
+        art_copy["is_paywalled"] = is_paywalled
+        return art_copy
+
+    logger.info("Fetching full article texts for candidate news...")
+    enriched_articles = await asyncio.gather(*[enrich_article(a) for a in articles[:6]])
+    for a in articles[6:]:
+        art_copy = dict(a)
+        art_copy["body"] = ""
+        art_copy["is_paywalled"] = False
+        enriched_articles.append(art_copy)
+
+    # Build context string with full text
     articles_snippet = ""
-    for idx, art in enumerate(articles):
-        desc = art['description'][:800] + "..." if len(art['description']) > 800 else art['description']
-        articles_snippet += f"[{idx+1}] Title: {art['title']}\nSummary: {desc}\nLink: {art['link']}\n\n"
+    for idx, art in enumerate(enriched_articles):
+        desc = art.get('description', '')
+        body = art.get('body', '')
+        is_pw = art.get('is_paywalled', False)
+        
+        pw_badge = " [PAYWALLED / SHORT TEASER]" if is_pw else ""
+        text_to_show = body if (body and len(body) > 200) else desc
+        if len(text_to_show) > 1800:
+            text_to_show = text_to_show[:1800] + "..."
+            
+        articles_snippet += f"[{idx+1}] Title: {art['title']}{pw_badge}\nLink: {art['link']}\nContent:\n{text_to_show}\n\n"
 
     companies_str = ", ".join(target_companies)
 
@@ -266,7 +338,7 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], posted
 
 Task 1: Check if any of these companies have layoffs/restructuring news: {companies_str}
 
-Task 2: Write ONE Russian tech digest post.
+Task 2: Write ONE Russian tech digest post summarizing ONE real, substantive IT/tech article from the list.
 
 ALREADY PUBLISHED HEADLINES (DO NOT write about these events again):
 {recent_topics_str}
@@ -274,19 +346,23 @@ ALREADY PUBLISHED HEADLINES (DO NOT write about these events again):
 ALREADY PUBLISHED TIPS (DO NOT repeat these tips, tools, or concepts):
 {recent_tips_str}
 
-Pick the MOST interesting, fresh article. Priority: IT Education in Denmark (EUD, EUX, Datatekniker) > Developer topics (75%) > Tech scene (25%).
-If the topic is an UPDATE to a story in the "ALREADY PUBLISHED" list, prefix headline with "🔄 <b>Дополнение:</b> ".
+CRITICAL ANTI-HALLUCINATION & FACTUALITY RULES (STRICT ZERO-HALLUCINATION POLICY):
+1. ZERO HALLUCINATIONS: Every fact, company name, technical detail, and quote in your summary MUST be strictly grounded in the provided article content.
+2. ABSOLUTELY DO NOT INVENT unmentioned facts. Do NOT make up new courses, curriculums, generative AI modules, DevOps tools, cloud partnerships, or educational programs unless they are EXPLICITLY written in the source text.
+3. If an article is marked [PAYWALLED] or is only a short teaser, DO NOT expand it with imagined details. Write a concise, 100% truthful summary of only what is confirmed in the text.
+4. If an article is purely administrative, unrelated to IT/programming, or lacks substance, IGNORE it and pick a better article from the list.
+5. Priority: Real IT & Developer news in Denmark / Europe > Startups & Tech breakthroughs > General IT.
 
 FORMATTING RULES (Telegram HTML):
 - Use HTML tags: <b>bold</b>, <i>italic</i>, <code>code</code>, <a href="url">text</a>
 - NO Markdown (* or _ or # or ```)!
 - No leading spaces/tabs. Every line starts at column 0.
-- Use natural storytelling. Combine the what, how, and why into a cohesive text rather than rigid bullet points.
+- Write in engaging, natural Russian, but keep the facts 100% accurate.
 
 TEMPLATE (follow EXACTLY):
-[Emoji: 🎓/⚖️/🔄/📰/🚀] <b>[Catchy Headline in Russian]</b>
+[Emoji: 🎓/⚖️/🔄/📰/🚀] <b>[Accurate, Catchy Headline in Russian]</b>
 
-[2-3 paragraphs of well-written, engaging text explaining the event, the technical details, and its impact on developers or the IT industry. Write naturally, like a good article.]
+[1-3 paragraphs of clear, engaging text explaining the actual event, confirmed details, and real context as stated in the source article. Never embellish with fake facts.]
 
 🔗 <a href="[original_link]">Читать полностью</a>
 
