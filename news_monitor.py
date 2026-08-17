@@ -323,15 +323,16 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], posted
     recent_topics_str = "\n".join([f"- {t}" for t in recent_headlines[-15:]]) if recent_headlines else "None"
     recent_tips_str = "\n".join([f"- {t}" for t in recent_tips[-10:]]) if recent_tips else "None"
 
-    # Pick a random category for the tip to ensure variety
+    # Pick a random category for the educational concept to ensure rich technical variety
     import random
     tip_categories = [
-        "Полезный инструмент или библиотека для разработчика (например: CLI-утилита, VS Code расширение, npm/pip пакет)",
-        "Новая технология или концепция в AI/ML (например: новый подход в fine-tuning, RAG, агентные фреймворки)",
-        "Паттерн проектирования или архитектурная концепция (например: CQRS, Event Sourcing, чистая архитектура)",
-        "Практический совет по карьере в IT (собеседования, soft skills, рост, менторство)",
-        "Малоизвестный исторический факт из мира IT (пасхалки, истории создания технологий, курьёзы)",
-        "Полезная техника программирования (например: дебаг-приём, оптимизация, работа с Git)",
+        "Концепция или атака в кибербезопасности (например: Phishing, SQL Injection, CSRF, Zero-Trust, Man-in-the-Middle, XSS) с определением и 2 практическими пунктами защиты/работы",
+        "Архитектурный паттерн или концепция проектирования (например: Event-Driven Architecture, CQRS, Circuit Breaker, Clean Architecture, Saga, Event Sourcing) с сутью и 2 пунктами преимуществ/применения",
+        "Сетевой протокол или фундаментальная концепция (например: OSI-модель, TCP vs UDP, DNS resolution, TLS 1.3, WebSockets, gRPC, HTTP/3) с объяснением и 2 пунктами пользы/применения",
+        "Многопоточность и системное программирование (например: Deadlock, Race Condition, Mutex vs Semaphore, Memory Leaks, Garbage Collection, Coroutines) с определением и 2 пунктами предотвращения/работы",
+        "Структура данных или алгоритм (например: Hash Map vs Tree, Массивы vs Связные списки, Ring Buffer, LRU Cache, B-Tree в базах данных) с объяснением где что лучше применять и почему",
+        "Практическая фича языка или технологии (например: полезный метод в C#/Go/Python/SQL, фича Docker/Git, CLI-утилита, оптимизация запросов через EXPLAIN) с 2 практическими пунктами",
+        "Инженерная методика или DevOps-практика (например: 12-Factor App, TDD, Tracing & Observability, Semantic Versioning, Blue-Green Deployment) с сутью и 2 практическими выводами"
     ]
     selected_category = random.choice(tip_categories)
 
@@ -386,11 +387,10 @@ ALREADY PUBLISHED TIPS (DO NOT repeat these tips, tools, or concepts):
 {recent_tips_str}
 
 CRITICAL ANTI-HALLUCINATION & FACTUALITY RULES (STRICT ZERO-HALLUCINATION POLICY):
-1. ZERO HALLUCINATIONS: Every fact, company name, technical detail, and quote in your summary MUST be strictly grounded in the provided article content.
-2. ABSOLUTELY DO NOT INVENT unmentioned facts. Do NOT make up new courses, curriculums, generative AI modules, DevOps tools, cloud partnerships, or educational programs unless they are EXPLICITLY written in the source text.
-3. If an article is marked [PAYWALLED] or is only a short teaser, DO NOT expand it with imagined details. Write a concise, 100% truthful summary of only what is confirmed in the text.
-4. If an article is purely administrative, unrelated to IT/programming, or lacks substance, IGNORE it and pick a better article from the list.
-5. Priority: Real IT & Developer news in Denmark / Europe > Startups & Tech breakthroughs > General IT.
+1. ZERO HALLUCINATIONS: Every fact, company name, technical detail, and quote in your news summary MUST be strictly grounded in the provided article content.
+2. ABSOLUTELY DO NOT INVENT unmentioned facts in the news section.
+3. If an article is marked [PAYWALLED] or is only a short teaser, write a concise summary of only what is confirmed in the text.
+4. Priority: Real IT & Developer news in Denmark / Europe > Startups & Tech breakthroughs > General IT.
 
 FORMATTING RULES (Telegram HTML):
 - Use HTML tags: <b>bold</b>, <i>italic</i>, <code>code</code>, <a href="url">text</a>
@@ -405,7 +405,13 @@ TEMPLATE (follow EXACTLY):
 
 🔗 <a href="[original_link]">Читать полностью</a>
 
-💡 <b>Полезно знать:</b> [1-2 sentences. Category for THIS post: {selected_category}. Write something practical and actionable from this category. It must be COMPLETELY DIFFERENT from everything in the "ALREADY PUBLISHED TIPS" list above.]
+💡 <b>Полезно знать: [Concept / Technology Name]</b>
+
+[1-2 clear, concise sentences explaining the concept/technology/pattern.]
+• [Key technical fact / how it works under the hood / conditions]
+• [Where it is applied in practice / engineering benefit / how to solve the problem]
+
+(Note for 'Полезно знать': Category for THIS post: {selected_category}. Must be COMPLETELY DIFFERENT from everything in the "ALREADY PUBLISHED TIPS" list above.)
 
 Articles:
 {articles_snippet}
@@ -651,9 +657,11 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
             posted_news_titles.append(first_line.strip())
         
         # Extract the "Полезно знать" tip text for separate tip deduplication
-        tip_match = re.search(r'Полезно знать:</b>\s*(.+?)(?:\n|$)', digest_ru)
+        tip_match = re.search(r'Полезно знать:?\s*</b>?\s*([^<\n]+)', digest_ru)
         if tip_match:
-            posted_news_titles.append(f"TIP:{tip_match.group(1).strip()}")
+            tip_name = tip_match.group(1).strip().strip("</b>").strip()
+            if len(tip_name) > 3:
+                posted_news_titles.append(f"TIP:{tip_name}")
             
         restructuring_comps.extend(analysis.get("restructuring_companies", []))
 
