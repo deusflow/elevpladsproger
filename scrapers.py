@@ -446,3 +446,51 @@ async def scrape_elevplads() -> list[dict]:
                 logger.error(f"Error in elevplads scraper for query '{q}': {e}")
                 
     return jobs
+
+@with_error_screenshot("TechJob")
+async def scrape_techjob(page: Page) -> list[dict]:
+    """Scrape specialized tech jobs and apprenticeships from TechJob.dk (Ingeniøren / Version2)."""
+    jobs = []
+    logger.info("Scraping TechJob.dk...")
+    for q in ["elev", "lærling", "datatekniker", "softwareudvikler"]:
+        try:
+            url = f"https://techjob.dk/search?q={urllib.parse.quote(q)}"
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            
+            try:
+                await page.wait_for_selector(".job-card, .search-result, article, .job-item, .views-row", timeout=8000)
+            except Exception:
+                continue
+
+            cards = await page.locator(".job-card, .search-result, article, .job-item, .views-row").all()
+            for card in cards:
+                title_el = card.locator("h2 a, h3 a, h4 a, .job-title a, a[href*='/job/']").first
+                if not await title_el.count():
+                    continue
+                title = (await title_el.inner_text()).strip()
+                href = await title_el.get_attribute("href") or ""
+                job_url = href if href.startswith("http") else f"https://techjob.dk{href}"
+
+                company_el = card.locator(".company, .company-name, [class*='company']").first
+                company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
+
+                loc_el = card.locator(".location, .city, [class*='location'], .area").first
+                location_text = (await loc_el.inner_text()).strip() if await loc_el.count() else ""
+                
+                postal_match = re.search(r'\b(\d{4})\b', location_text)
+                postal = postal_match.group(1) if postal_match else ""
+
+                if is_valid_job(title, postal, company, location_text):
+                    job_id_str = f"{company}_{title}_{job_url}"
+                    job_id = hashlib.md5(job_id_str.encode()).hexdigest()
+                    jobs.append(format_job(
+                        job_id=job_id,
+                        title=title,
+                        company=company,
+                        url=job_url,
+                        source="TechJob"
+                    ))
+        except Exception as e:
+            logger.warning(f"Error querying TechJob.dk for '{q}': {e}")
+            
+    return jobs

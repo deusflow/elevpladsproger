@@ -394,9 +394,10 @@ CRITICAL ANTI-HALLUCINATION & FACTUALITY RULES (STRICT ZERO-HALLUCINATION POLICY
 
 FORMATTING RULES (Telegram HTML):
 - Use HTML tags: <b>bold</b>, <i>italic</i>, <code>code</code>, <a href="url">text</a>
-- NO Markdown (* or _ or # or ```)!
+- NO Markdown (* or _ or # or ``` for formatting)!
 - No leading spaces/tabs. Every line starts at column 0.
 - Write in engaging, natural Russian, but keep the facts 100% accurate.
+- At the very bottom of the post, add 3-5 relevant hashtags (e.g. #security #architecture #ai #csharp #devops #denmark #database #networking #programming #git #cleanarchitecture).
 
 TEMPLATE (follow EXACTLY):
 [Emoji: 🎓/⚖️/🔄/📰/🚀] <b>[Accurate, Catchy Headline in Russian]</b>
@@ -410,6 +411,8 @@ TEMPLATE (follow EXACTLY):
 [1-2 clear, concise sentences explaining the concept/technology/pattern.]
 • [Key technical fact / how it works under the hood / conditions]
 • [Where it is applied in practice / engineering benefit / how to solve the problem]
+
+#[tag1] #[tag2] #[tag3] #[tag4]
 
 (Note for 'Полезно знать': Category for THIS post: {selected_category}. Must be COMPLETELY DIFFERENT from everything in the "ALREADY PUBLISHED TIPS" list above.)
 

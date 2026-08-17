@@ -413,6 +413,7 @@ async def main():
                     run_scraper(scrapers.scrape_jobnet, context),
                     run_scraper(scrapers.scrape_jobindex, context),
                     run_scraper(scrapers.scrape_itjobbank, context),
+                    run_scraper(scrapers.scrape_techjob, context),
                     company_scrapers.scrape_custom_companies(context, dynamic_companies)
                 ]
                 
@@ -430,7 +431,7 @@ async def main():
         valid_items = [item for item in all_items if item.get("type") != "scraper_error"]
         
         # Track Scraper Health
-        KNOWN_JOB_SOURCES = ["TheHub", "Elevplads", "Laerepladsen", "Jobnet", "Jobindex", "IT-Jobbank"]
+        KNOWN_JOB_SOURCES = ["TheHub", "Elevplads", "Laerepladsen", "Jobnet", "Jobindex", "IT-Jobbank", "TechJob"]
         scraper_failures = state.get("scraper_failures", {})
         notified_scraper_failures = state.get("notified_scraper_failures", {})
         errors_by_source = {err["source"]: err.get("error", "Unknown error") for err in scraper_errors}
@@ -506,7 +507,7 @@ async def main():
             active_count = len([j for j in old_jobs.values() if j.get("status") == "active"])
             heartbeat_msg = (
                 f"🔍 <b>Elevplads Monitor Status</b>\n"
-                f"Проверено 5 бирж (Lærepladsen, Jobnet, Jobindex, IT-Jobbank, TheHub) и 47 карьерных страниц.\n"
+                f"Проверено 7 бирж (Lærepladsen, Jobnet, Jobindex, IT-Jobbank, TheHub, Elevplads, TechJob) и 47 карьерных страниц.\n"
                 f"Новых elevplads за утро не найдено. Активных позиций в базе: {active_count}."
             )
             await notify_telegram([], [], [], heartbeat_msg, [])
