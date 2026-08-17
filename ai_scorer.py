@@ -88,26 +88,27 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
     
     # Try Gemini first
     if config.GEMINI_API_KEY:
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={config.GEMINI_API_KEY}"
-        gemini_payload = {
-            "contents": [{
-                "parts": [{"text": prompt}]
-            }],
-            "generationConfig": {
-                "response_mime_type": "application/json"
+        for g_model in ["gemini-2.5-flash", "gemini-1.5-flash"]:
+            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
+            gemini_payload = {
+                "contents": [{
+                    "parts": [{"text": prompt}]
+                }],
+                "generationConfig": {
+                    "response_mime_type": "application/json"
+                }
             }
-        }
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(gemini_url, json=gemini_payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    content = data["candidates"][0]["content"]["parts"][0]["text"]
-                    return extract_json_payload(content)
-                else:
-                    logger.warning(f"Gemini API scoring error {resp.status_code}: {resp.text}")
-        except Exception as e:
-            logger.error(f"Gemini API exception during scoring: {e}")
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(gemini_url, json=gemini_payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        content = data["candidates"][0]["content"]["parts"][0]["text"]
+                        return extract_json_payload(content)
+                    else:
+                        logger.warning(f"Gemini API scoring error {resp.status_code} on {g_model}: {resp.text}")
+            except Exception as e:
+                logger.error(f"Gemini API exception during scoring ({g_model}): {e}")
             
     # Fallback to Groq
     if config.GROQ_API_KEY:

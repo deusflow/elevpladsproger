@@ -215,9 +215,6 @@ def extract_json_payload(text_content: str) -> dict:
 
 async def autograde_digest(digest_ru: str, snippets: str) -> bool:
     """Check for hallucinations, fabricated courses, and ungrounded claims. Returns False if digest is hallucinated."""
-    if not config.GEMINI_API_KEY:
-        return True
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={config.GEMINI_API_KEY}"
     prompt = f"""Source article text:
 {snippets[:4000]}
 
@@ -228,17 +225,45 @@ Fact-Check Task:
 Compare the generated Russian text against the source text.
 Does the generated text invent fake facts, unmentioned educational courses/modules, non-existent AI/DevOps tools, or invent claims not supported by the source text?
 Reply 'FAIL' if the post invents ungrounded facts or distorts the source. Reply 'OK' if the post is factually faithful to the source text."""
-    payload: dict[str, Any] = {"contents": [{"parts": [{"text": prompt}]}]}
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code == 200:
-                res = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                if "FAIL" in res.upper():
-                    logger.warning(f"Autograder BLOCKED hallucinated digest: {res}")
-                    return False
-    except Exception as e:
-        logger.warning(f"Autograder check error (allowing digest): {e}")
+
+    if config.GEMINI_API_KEY:
+        for g_model in ["gemini-2.5-flash", "gemini-1.5-flash"]:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
+            payload: dict[str, Any] = {"contents": [{"parts": [{"text": prompt}]}]}
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        res = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                        if "FAIL" in res.upper():
+                            logger.warning(f"Autograder BLOCKED hallucinated digest ({g_model}): {res}")
+                            return False
+                        return True
+            except Exception as e:
+                logger.warning(f"Autograder check error ({g_model}): {e}")
+
+    # Fallback to Groq for autograding
+    if config.GROQ_API_KEY:
+        try:
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {config.GROQ_API_KEY}", "Content-Type": "application/json"}
+            payload = {
+                "model": "llama-3.1-8b-instant",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 100
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    res = resp.json()["choices"][0]["message"]["content"]
+                    if "FAIL" in res.upper():
+                        logger.warning(f"Autograder (Groq) BLOCKED hallucinated digest: {res}")
+                        return False
+                    return True
+        except Exception as e:
+            logger.warning(f"Autograder check error (Groq fallback): {e}")
+
     return True
 
 def validate_format(digest_ru: str) -> bool:
@@ -385,7 +410,7 @@ Return ONLY valid JSON:
 
     # 1. Try Gemini API first if key is available
     if config.GEMINI_API_KEY:
-        gemini_models = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+        gemini_models = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"]
         for g_model in gemini_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             payload: dict[str, Any] = {
@@ -432,7 +457,7 @@ Return ONLY valid JSON:
 
     # 2. Fallback to Groq API if Gemini is unavailable or fails
     if config.GROQ_API_KEY:
-        models_to_try = ["openai/gpt-oss-120b", "llama-3.1-8b-instant"]
+        models_to_try = ["openai/gpt-oss-120b", "llama-3.1-8b-instant", "qwen/qwen3.6-27b"]
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {config.GROQ_API_KEY}",
