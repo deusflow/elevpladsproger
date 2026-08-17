@@ -497,12 +497,23 @@ async def main():
         import cycle_predictor
         cycle_alerts = cycle_predictor.analyze_and_predict(state)
         
-        if cycle_alerts:
-            logger.info(f"Generated {len(cycle_alerts)} cycle prediction alerts.")
-            state_updated = True
-
         active_restructuring = state.get("restructuring_companies", [])
-        await notify_telegram(new_jobs, changed_companies, cycle_alerts, "", active_restructuring)
+        
+        # Check if we should send a reassuring daily morning heartbeat when 0 new jobs found
+        today_str = now.strftime("%Y-%m-%d")
+        last_heartbeat = state.get("last_heartbeat_date")
+        if not new_jobs and not changed_companies and not cycle_alerts and now.hour < 12 and last_heartbeat != today_str:
+            active_count = len([j for j in old_jobs.values() if j.get("status") == "active"])
+            heartbeat_msg = (
+                f"🔍 <b>Elevplads Monitor Status</b>\n"
+                f"Проверено 5 бирж (Lærepladsen, Jobnet, Jobindex, IT-Jobbank, TheHub) и 47 карьерных страниц.\n"
+                f"Новых elevplads за утро не найдено. Активных позиций в базе: {active_count}."
+            )
+            await notify_telegram([], [], [], heartbeat_msg, [])
+            state["last_heartbeat_date"] = today_str
+            state_updated = True
+        else:
+            await notify_telegram(new_jobs, changed_companies, cycle_alerts, "", active_restructuring)
         
         # Always save state to update expiration statuses even if no new jobs
         for nj in new_jobs:

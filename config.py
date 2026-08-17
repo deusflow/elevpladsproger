@@ -16,8 +16,15 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 PROXY_URL = os.getenv("PROXY_URL")
 
 # Application Specific Configuration
+# Application Specific Configuration
 DB_FILE = "jobs_db.json"
-TARGET_POSTAL_CODES = set(map(str, range(7400, 9000)))
+# Covers all Region Midtjylland postal codes (6900-6999 Ringkøbing/Skjern, 7130-7180 Hedensted/Juelsminde, 7270-7999 Herning/Holstebro/Skive/Struer/Viborg, 8000-8999 Aarhus/Silkeborg/Horsens/Randers)
+TARGET_POSTAL_CODES = (
+    set(map(str, range(6900, 7000))) |
+    set(map(str, range(7130, 7180))) |
+    set(map(str, range(7270, 8000))) |
+    set(map(str, range(8000, 9000)))
+)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -86,12 +93,24 @@ Oleh Reznychenko
 """
 
 MIDTJYLLAND_CITIES = [
+    # Major Cities
     "aarhus", "randers", "silkeborg", "horsens", "herning", 
     "viborg", "holstebro", "skive", "ikast", "brande", 
     "odder", "hinnerup", "skanderborg", "bjerringbro", 
-    "hadsten", "hammel", "lemvig", "struer", "grenaa", "ebeltoft"
+    "hadsten", "hammel", "lemvig", "struer", "grenaa", "ebeltoft",
+    "ringkøbing", "ringkoebing", "skjern", "tarm", "videbæk", "videbaek",
+    "hedensted", "ry", "galten", "hornslet", "rønde", "roende",
+    
+    # Aarhus Districts & Tech Hubs
+    "viby", "viby j", "brabrand", "tilst", "skejby", "risskov", 
+    "højbjerg", "hoejbjerg", "hasselager", "tranbjerg", "lystrup",
+    "åbyhøj", "aabyhøj", "aabyhoej", "egå", "egaa", "mårslet", "maarslet",
+    "beder", "malling", "solbjerg", "skødstrup", "skoedstrup", "sabro", "trige",
+    
+    # Region and General Midtjylland terms
+    "midtjylland", "østjylland", "oestjylland", "vestjylland", "nordvestjylland",
+    "hele landet", "jylland", "remote", "hjemmearbejde"
 ]
-
 
 # Strict role keywords
 # Only Datatekniker - Programmering & Cybersecurity
@@ -101,18 +120,18 @@ TARGET_KEYWORDS = [
 ]
 
 # We want to be sure it's an apprenticeship/elevplads
-ELEV_KEYWORDS = ["elev", "lærling", "apprenticeship"]
+ELEV_KEYWORDS = ["elev", "lærling", "apprenticeship", "trainee", "elevplads", "læreansættelse"]
 
 EXCLUDE_KEYWORDS = [
     "supporter",
-    "drift",
+    "supporttekniker",
     "helpdesk",
+    "servicedesk",
     "studiejob",
     "student",
     "studentermedhjælper",
     "intern",
-    "internship",
-    "netværk"
+    "internship"
 ]
 
 TARGET_ENTERPRISES = ["arla", "eurowind", "thise mejeri"]

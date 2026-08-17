@@ -35,46 +35,40 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
     company_lower = company.lower()
     location_lower = location.lower()
     
-    # Geolocation filtering
+    # 1. Geolocation filtering
     is_in_region = bypass_geo
     if not is_in_region:
         if postal_code and postal_code.isdigit():
             if postal_code in config.TARGET_POSTAL_CODES:
                 is_in_region = True
         else:
-            if config.CITY_PATTERN.search(location_lower) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower:
+            if config.CITY_PATTERN.search(location_lower) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower or "danmark" in location_lower:
                 is_in_region = True
                 
     if not is_in_region:
         return False
             
-    # Check hard exclusions first
+    # 2. Hard exclusions (pure support, helpdesk, studentermedhjælper, unpaid internships)
     if config.EXCLUSION_PATTERN.search(title_lower):
         return False
         
-    # Smart exclude: if title contains infrastruktur/support, it MUST also contain programming keywords
-    has_target_skill = bool(config.TARGET_KEYWORD_PATTERN.search(title_lower))
-    if ("infrastruktur" in title_lower or "support" in title_lower) and not has_target_skill:
-        return False
-            
-    # Target enterprises logic
-    is_target_enterprise = any(ent in company_lower for ent in config.TARGET_ENTERPRISES)
-
-    # Check for target keywords using word boundaries to avoid false positives
-    has_target_skill = bool(config.TARGET_KEYWORD_PATTERN.search(title_lower))
-            
+    # 3. MUST be an elevplads / apprenticeship / trainee / datatekniker
     is_elev = "datatekniker" in title_lower or any(e in title_lower for e in config.ELEV_KEYWORDS)
-    is_it_role = "datatekniker" in title_lower or "it" in title_lower.split() or "it-" in title_lower or "data" in title_lower
-    
-    if is_target_enterprise and is_elev:
+    if not is_elev:
+        return False
+
+    # 4. Target Enterprise or Target IT Skill or General IT Role
+    is_target_enterprise = any(ent in company_lower for ent in config.TARGET_ENTERPRISES)
+    has_target_skill = bool(config.TARGET_KEYWORD_PATTERN.search(title_lower))
+    is_it_role = "datatekniker" in title_lower or "it" in title_lower.split() or "it-" in title_lower or "data" in title_lower or "software" in title_lower or "programm" in title_lower or "cyber" in title_lower
+
+    if is_target_enterprise:
         return True
         
-    if has_target_skill and is_elev:
+    if has_target_skill:
         return True
         
-    # Since we strictly filter out supporter/infrastructure/student jobs above, 
-    # any remaining "datatekniker" or "IT-elev" role is highly likely relevant
-    if is_elev and is_it_role:
+    if is_it_role:
         return True
         
     return False
@@ -111,7 +105,7 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
         # Load the direct search page which automatically triggers the API GET request
         # Widened to include the entire Data- og kommunikationsuddannelsen category (3607)
         url = "https://sr.laerepladsen.dk/soeg-opslag/0/Data-%20og%20kommunikationsuddannelsen/3607/midtjylland"
-        await page.goto(url, wait_until="networkidle", timeout=30000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             
         # Wait up to 8 seconds for interception to complete
         for _ in range(16):
@@ -145,47 +139,57 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
 async def scrape_jobnet(page: Page) -> list[dict]:
 
     jobs = []
-    logger.info("Scraping Jobnet...")
-    await page.goto("https://jobnet.dk/find-job", wait_until="networkidle", timeout=30000)
+    logger.info("Scraping Jobnet across all JOB_QUERIES...")
+    await page.goto("https://jobnet.dk/find-job", wait_until="domcontentloaded", timeout=30000)
     
-    # Call BFF Search endpoint
-    js_code = """
-    async () => {
-        const url = 'https://jobnet.dk/bff/FindJob/Search?resultsPerPage=100&pageNumber=1&orderType=BestMatch&searchString=datatekniker';
-        const response = await fetch(url, {
-            headers: {
-                'x-csrf': '1',
-                'accept': 'application/json'
-            }
-        });
-        if (!response.ok) {
-            throw new Error('HTTP error ' + response.status);
-        }
-        return await response.json();
-    }
-    """
-    data = await page.evaluate(js_code)
-    postings = data.get("jobAds", [])
-    logger.info(f"Jobnet BFF API returned {len(postings)} postings")
-    
-    for item in postings:
-        title = item.get("title", "") or item.get("occupation", "")
-        company = item.get("hiringOrgName", "Ukendt")
-        postal = str(item.get("postalCode", ""))
-        job_id = str(item.get("jobAdId", ""))
-        
-        # Use external URL if available, otherwise construct standard Jobnet details URL
-        external_url = item.get("jobAdUrl", "")
-        url = external_url if (external_url and external_url.startswith("http")) else f"https://jobnet.dk/find-job/details/{job_id}"
+    seen_ids = set()
+    for q in config.JOB_QUERIES:
+        try:
+            q_encoded = urllib.parse.quote(q)
+            js_code = f"""
+            async () => {{
+                const url = 'https://jobnet.dk/bff/FindJob/Search?resultsPerPage=100&pageNumber=1&orderType=BestMatch&searchString={q_encoded}';
+                const response = await fetch(url, {{
+                    headers: {{
+                        'x-csrf': '1',
+                        'accept': 'application/json'
+                    }}
+                }});
+                if (!response.ok) {{
+                    return {{ jobAds: [] }};
+                }}
+                return await response.json();
+            }}
+            """
+            data = await page.evaluate(js_code)
+            postings = data.get("jobAds", [])
+            logger.info(f"Jobnet returned {len(postings)} postings for '{q}'")
+            
+            for item in postings:
+                job_id = str(item.get("jobAdId", ""))
+                if not job_id or job_id in seen_ids:
+                    continue
+                    
+                title = item.get("title", "") or item.get("occupation", "")
+                company = item.get("hiringOrgName", "Ukendt")
+                postal = str(item.get("postalCode", ""))
+                
+                # Use external URL if available, otherwise construct standard Jobnet details URL
+                external_url = item.get("jobAdUrl", "")
+                url = external_url if (external_url and external_url.startswith("http")) else f"https://jobnet.dk/find-job/details/{job_id}"
 
-        if is_valid_job(title, postal, company):
-            jobs.append(format_job(
-                job_id=job_id,
-                title=title,
-                company=company,
-                url=url,
-                source="Jobnet"
-            ))
+                if is_valid_job(title, postal, company):
+                    seen_ids.add(job_id)
+                    jobs.append(format_job(
+                        job_id=job_id,
+                        title=title,
+                        company=company,
+                        url=url,
+                        source="Jobnet"
+                    ))
+        except Exception as e:
+            logger.warning(f"Error querying Jobnet for '{q}': {e}")
+            
     return jobs
 
 @with_error_screenshot("IT-Jobbank")
