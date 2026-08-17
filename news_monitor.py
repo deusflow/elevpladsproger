@@ -227,7 +227,7 @@ Does the generated text invent fake facts, unmentioned educational courses/modul
 Reply 'FAIL' if the post invents ungrounded facts or distorts the source. Reply 'OK' if the post is factually faithful to the source text."""
 
     if config.GEMINI_API_KEY:
-        for g_model in ["gemini-2.5-flash", "gemini-1.5-flash"]:
+        for g_model in ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             payload: dict[str, Any] = {"contents": [{"parts": [{"text": prompt}]}]}
             try:
@@ -410,7 +410,12 @@ Return ONLY valid JSON:
 
     # 1. Try Gemini API first if key is available
     if config.GEMINI_API_KEY:
-        gemini_models = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-2.0-flash"]
+        gemini_models = [
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-1.5-flash"
+        ]
         for g_model in gemini_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             payload: dict[str, Any] = {
