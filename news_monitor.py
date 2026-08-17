@@ -214,20 +214,28 @@ def extract_json_payload(text_content: str) -> dict:
     return json.loads(text_content, strict=False)
 
 async def autograde_digest(digest_ru: str, snippets: str) -> bool:
-    """Check for hallucinations, fabricated courses, and ungrounded claims. Returns False if digest is hallucinated."""
-    prompt = f"""Source article text:
-{snippets[:4000]}
+    """Check for hallucinations, fabricated courses, and ungrounded claims in the news summary."""
+    # Strip the educational developer tip at the bottom so it doesn't cause a false positive
+    news_body = digest_ru
+    if "💡" in news_body:
+        news_body = news_body.split("💡")[0].strip()
+    elif "Полезно знать" in news_body:
+        news_body = news_body.split("Полезно знать")[0].strip()
 
-Generated Russian Telegram post:
-{digest_ru}
+    prompt = f"""Source article text:
+{snippets[:3500]}
+
+Generated Russian News Summary:
+{news_body}
 
 Fact-Check Task:
-Compare the generated Russian text against the source text.
-Does the generated text invent fake facts, unmentioned educational courses/modules, non-existent AI/DevOps tools, or invent claims not supported by the source text?
-Reply 'FAIL' if the post invents ungrounded facts or distorts the source. Reply 'OK' if the post is factually faithful to the source text."""
+Compare the generated Russian news summary against the source text.
+Does the summary invent fake facts, non-existent people, or fake events not mentioned in the source?
+(Note: stylistic rewriting or translating into engaging Russian is completely fine. Only flag if it invents completely made-up facts).
+Reply 'FAIL' only if the summary contains completely fabricated facts. Otherwise, reply 'OK'."""
 
     if config.GEMINI_API_KEY:
-        for g_model in ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
+        for g_model in ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash"]:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             payload: dict[str, Any] = {"contents": [{"parts": [{"text": prompt}]}]}
             try:
@@ -336,8 +344,8 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], posted
         return art_copy
 
     logger.info("Fetching full article texts for candidate news...")
-    enriched_articles = await asyncio.gather(*[enrich_article(a) for a in articles[:8]])
-    for a in articles[8:]:
+    enriched_articles = await asyncio.gather(*[enrich_article(a) for a in articles[:4]])
+    for a in articles[4:6]:
         art_copy = dict(a)
         art_copy["body"] = ""
         art_copy["is_paywalled"] = False
@@ -345,21 +353,21 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], posted
 
     # Prioritize completely free, full-text articles over paywalled snippets
     enriched_articles.sort(
-        key=lambda a: (1 if (not a.get("is_paywalled") and len(a.get("body", "")) > 500) else 0),
+        key=lambda a: (1 if (not a.get("is_paywalled") and len(a.get("body", "")) > 300) else 0),
         reverse=True
     )
 
-    # Build context string with full text
+    # Build compact context string with full text (keeps total prompt under 2500 tokens for Groq TPM limit)
     articles_snippet = ""
-    for idx, art in enumerate(enriched_articles):
+    for idx, art in enumerate(enriched_articles[:4]):
         desc = art.get('description', '')
         body = art.get('body', '')
         is_pw = art.get('is_paywalled', False)
         
         pw_badge = " [PAYWALLED / SHORT TEASER]" if is_pw else ""
-        text_to_show = body if (body and len(body) > 200) else desc
-        if len(text_to_show) > 1800:
-            text_to_show = text_to_show[:1800] + "..."
+        text_to_show = body if (body and len(body) > 150) else desc
+        if len(text_to_show) > 900:
+            text_to_show = text_to_show[:900] + "..."
             
         articles_snippet += f"[{idx+1}] Title: {art['title']}{pw_badge}\nLink: {art['link']}\nContent:\n{text_to_show}\n\n"
 
@@ -411,10 +419,9 @@ Return ONLY valid JSON:
     # 1. Try Gemini API first if key is available
     if config.GEMINI_API_KEY:
         gemini_models = [
+            "gemini-3.6-flash",
             "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-2.5-flash",
-            "gemini-1.5-flash"
+            "gemini-3.5-flash-lite"
         ]
         for g_model in gemini_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"

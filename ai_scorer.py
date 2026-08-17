@@ -88,7 +88,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
     
     # Try Gemini first
     if config.GEMINI_API_KEY:
-        for g_model in ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-1.5-flash"]:
+        for g_model in ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]:
             gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             gemini_payload = {
                 "contents": [{
