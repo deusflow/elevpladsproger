@@ -232,19 +232,32 @@ Fact-Check Task:
 Compare the generated Russian news summary against the source text.
 Does the summary invent fake facts, non-existent people, or fake events not mentioned in the source?
 (Note: stylistic rewriting or translating into engaging Russian is completely fine. Only flag if it invents completely made-up facts).
-Reply 'FAIL' only if the summary contains completely fabricated facts. Otherwise, reply 'OK'."""
+
+Return JSON ONLY:
+{{
+    "is_faithful": true,
+    "reason": "Brief explanation"
+}}"""
 
     if config.GEMINI_API_KEY:
         for g_model in ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash"]:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
-            payload: dict[str, Any] = {"contents": [{"parts": [{"text": prompt}]}]}
+            payload: dict[str, Any] = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "temperature": 0.1
+                }
+            }
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.post(url, json=payload)
                     if resp.status_code == 200:
-                        res = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                        if "FAIL" in res.upper():
-                            logger.warning(f"Autograder BLOCKED hallucinated digest ({g_model}): {res}")
+                        res_json = resp.json()
+                        text = res_json["candidates"][0]["content"]["parts"][0]["text"]
+                        data = extract_json_payload(text)
+                        if data.get("is_faithful") is False:
+                            logger.warning(f"Autograder BLOCKED hallucinated digest ({g_model}): {data.get('reason')}")
                             return False
                         return True
             except Exception as e:
@@ -256,17 +269,22 @@ Reply 'FAIL' only if the summary contains completely fabricated facts. Otherwise
             url = "https://api.groq.com/openai/v1/chat/completions"
             headers = {"Authorization": f"Bearer {config.GROQ_API_KEY}", "Content-Type": "application/json"}
             payload = {
-                "model": "llama-3.1-8b-instant",
-                "messages": [{"role": "user", "content": prompt}],
+                "model": "openai/gpt-oss-120b",
+                "messages": [
+                    {"role": "system", "content": "You are a JSON fact-checker. Output ONLY valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                "response_format": {"type": "json_object"},
                 "temperature": 0.1,
-                "max_tokens": 100
+                "max_tokens": 150
             }
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(url, headers=headers, json=payload)
                 if resp.status_code == 200:
-                    res = resp.json()["choices"][0]["message"]["content"]
-                    if "FAIL" in res.upper():
-                        logger.warning(f"Autograder (Groq) BLOCKED hallucinated digest: {res}")
+                    text = resp.json()["choices"][0]["message"]["content"]
+                    data = extract_json_payload(text)
+                    if data.get("is_faithful") is False:
+                        logger.warning(f"Autograder (Groq) BLOCKED hallucinated digest: {data.get('reason')}")
                         return False
                     return True
         except Exception as e:
