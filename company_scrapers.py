@@ -86,7 +86,7 @@ Page Text:
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "llama-3.1-8b-instant",
+        "model": "openai/gpt-oss-120b",
         "messages": [
             {"role": "system", "content": "You are a precise JSON job extractor."},
             {"role": "user", "content": prompt}
@@ -126,10 +126,10 @@ Page Text:
         
     return [], False
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+@retry(stop=stop_after_attempt(2), wait=wait_fixed(2))
 async def _do_scrape_company(page: Page, url: str):
-    await page.goto(url, wait_until="networkidle", timeout=30000)
-    await page.wait_for_timeout(2000) # Give extra time for JS/Iframes to render
+    await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+    await page.wait_for_load_state("domcontentloaded")
     
     found_jobs: list[dict] = []
     await extract_links_from_frame(page.main_frame, url, found_jobs)

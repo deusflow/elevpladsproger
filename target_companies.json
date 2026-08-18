@@ -47,5 +47,10 @@
     { "name": "Bankdata", "url": "https://www.bankdata.dk/karriere/ledige-stillinger" },
     { "name": "JN Data", "url": "https://www.jndata.dk/karriere/ledige-job/" },
     { "name": "Kamstrup", "url": "https://www.kamstrup.com/da-dk/karriere/ledige-stillinger" },
-    { "name": "Energinet", "url": "https://energinet.dk/om-os/karriere/ledige-job/" }
+    { "name": "Energinet", "url": "https://energinet.dk/om-os/karriere/ledige-job/" },
+    { "name": "Mercantec", "url": "https://www.mercantec.dk/om-mercantec/job-paa-mercantec" },
+    { "name": "Aarhus Tech", "url": "https://www.aarhustech.dk/job/" },
+    { "name": "KMD", "url": "https://www.kmd.dk/karriere/ledige-stillinger" },
+    { "name": "Visma", "url": "https://www.visma.dk/karriere/ledige-stillinger/" },
+    { "name": "Stibo Systems", "url": "https://www.stibosystems.com/careers" }
 ]

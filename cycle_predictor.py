@@ -7,14 +7,23 @@ logger = logging.getLogger("elevplads_scraper")
 # 1 = January, 2 = February, etc.
 SEED_CYCLES = {
     "arla": [2, 9], # February and September
-    "netcompany": [2], # February
-    "grundfos": [3], # March
-    "vestas": [3], # March
-    "lego": [4], # April
-    "bestseller": [3], # March
-    "jyske bank": [1], # January
-    "salling group": [2], # February
-    "danske bank": [1], # January
+    "netcompany": [2, 8], # February and August
+    "systematic": [3, 9], # March and September (Aarhus HQ)
+    "grundfos": [3, 9], # March and September (Bjerringbro)
+    "vestas": [3, 8], # March and August (Aarhus)
+    "lego": [3, 10], # March and October (Billund/Midt)
+    "bestseller": [2, 8], # February and August (Aarhus/Brande)
+    "danske bank": [1, 8], # January and August
+    "jyske bank": [1, 8], # January and August (Silkeborg)
+    "bankdata": [2, 9], # February and September (Silkeborg/Midt)
+    "jn data": [3, 10], # March and October (Silkeborg)
+    "bec financial technologies": [2, 9], # February and September
+    "kmd": [2, 8], # February and August
+    "visma": [3, 9], # March and September (Aarhus)
+    "trifork": [2, 8], # February and August (Aarhus)
+    "salling group": [2, 8], # February and August (Brabrand)
+    "energinet": [2, 9], # February and September
+    "stibo systems": [3, 9], # March and September (Aarhus)
 }
 
 def analyze_and_predict(state: dict) -> list[str]:
