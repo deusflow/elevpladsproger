@@ -45,6 +45,17 @@ KEY_ENTITIES = {
     "twitter", "threads", "instagram", "whatsapp", "signal", "telegram"
 }
 
+# Danish Tech & IT Education keywords for broad feeds (e.g. DR.dk)
+DR_TECH_KEYWORDS = [
+    "ai", "kunstig intelligens", "it-uddannelse", "datatekniker", "erhvervsuddannelse",
+    "eud", "eux", "it-sikkerhed", "cyber", "hacker", "hacking", "teknologi", "software",
+    "supercomputer", "datacenter", "digitalisering", "mitid", "tech", "datalogi",
+    "kodning", "algoritme", "robot", "cloud", "it-system", "it-svigt", "it-angreb",
+    "læreplads", "skoleoplæring", "it-branchen", "tech-giganter", "meta", "google",
+    "apple", "microsoft", "openai", "nvidia", "deepseek", "chatgpt"
+]
+DR_TECH_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, DR_TECH_KEYWORDS)) + r')\b', re.IGNORECASE)
+
 def clean_tokens(s: str) -> set[str]:
     words = re.findall(r'\w+', s.lower())
     return {w for w in words if w not in DANISH_STOPWORDS and len(w) > 2}
@@ -72,9 +83,15 @@ def get_topic_fingerprint(title: str) -> set[str]:
 
 def is_topic_duplicate(title1: str, title2: str) -> bool:
     """Check if two titles are about the same topic/event.
-    Uses a combination of: entity overlap, synonym group matching, and Jaccard similarity."""
+    Uses a combination of: exact normalized matching, entity overlap, synonym group matching, and Jaccard similarity."""
     if not title1 or not title2:
         return False
+
+    # Layer 0: Exact normalized title match (ignoring punctuation, casing, extra whitespace)
+    norm1 = re.sub(r'[^\w\s]', '', title1.lower()).strip()
+    norm2 = re.sub(r'[^\w\s]', '', title2.lower()).strip()
+    if norm1 == norm2:
+        return True
 
     # Layer 1: Direct Jaccard on cleaned tokens (catches obvious dupes)
     set1 = clean_tokens(title1)
@@ -115,7 +132,7 @@ def is_topic_duplicate(title1: str, title2: str) -> bool:
 
     return False
 
-async def fetch_rss(url: str) -> tuple[list[dict], bool]:
+async def fetch_rss(url: str, source_name: str = "") -> tuple[list[dict], bool]:
     """Fetch and parse RSS/Atom feed into a list of articles using feedparser and httpx. Returns (articles, success_flag)."""
     articles = []
     headers = {
@@ -143,12 +160,19 @@ async def fetch_rss(url: str) -> tuple[list[dict], bool]:
                         description = re.sub(r'<[^>]+>', ' ', description)
                         description = re.sub(r'\s+', ' ', description).strip()
                     
+                    # If fetching from a broad national source like DR, apply strict IT & Education keyword filtering
+                    if source_name.startswith("DR"):
+                        combined_text = f"{title} {description}".lower()
+                        if not DR_TECH_PATTERN.search(combined_text):
+                            continue
+
                     if title and link:
                         articles.append({
                             "title": title,
                             "link": link,
                             "description": description or "",
-                            "timestamp": timestamp
+                            "timestamp": timestamp,
+                            "source": source_name
                         })
                 return articles, True
             else:
@@ -582,7 +606,7 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     feed_failures = state.get("feed_failures", {})
 
     for source, url in config.RSS_FEEDS.items():
-        articles, success = await fetch_rss(url)
+        articles, success = await fetch_rss(url, source_name=source)
         if not success:
             feed_failures[source] = feed_failures.get(source, 0) + 1
             if feed_failures[source] >= 3:
