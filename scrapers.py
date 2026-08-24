@@ -494,3 +494,68 @@ async def scrape_techjob(page: Page) -> list[dict]:
             logger.warning(f"Error querying TechJob.dk for '{q}': {e}")
             
     return jobs
+
+@with_error_screenshot("LinkedIn")
+async def scrape_linkedin(page: Page) -> list[dict]:
+    """Scrape public LinkedIn job listings in Denmark / Midtjylland for apprenticeships and elevpladser."""
+    jobs = []
+    logger.info("Scraping LinkedIn Denmark Jobs...")
+    queries = ["datatekniker", "it elev", "software elev", "elev programmering", "lærling it", "trainee software", "it-lærling"]
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept-Language": "da-DK,da;q=0.9,en-US;q=0.8,en;q=0.7"
+    }
+    
+    client_kwargs: dict[str, Any] = {"timeout": 15.0, "follow_redirects": True}
+    if config.PROXY_URL:
+        client_kwargs["proxy"] = config.PROXY_URL
+        
+    async with httpx.AsyncClient(**client_kwargs) as client:
+        for q in queries:
+            try:
+                # LinkedIn guest search API with geoId=104514075 (Denmark)
+                url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={urllib.parse.quote(q)}&location=Danmark&geoId=104514075&f_TPR=r2592000"
+                resp = await client.get(url, headers=headers)
+                if resp.status_code != 200:
+                    logger.debug(f"LinkedIn guest endpoint returned {resp.status_code} for '{q}'")
+                    continue
+                
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(resp.text, "html.parser")
+                cards = soup.select("li, .job-search-card, .base-search-card")
+                
+                for card in cards:
+                    title_el = card.select_one(".base-search-card__title, h3")
+                    comp_el = card.select_one(".base-search-card__subtitle, h4")
+                    loc_el = card.select_one(".job-search-card__location, span[class*='location']")
+                    link_el = card.select_one("a.base-card__full-link, a[href*='/jobs/view/']")
+                    
+                    if not title_el or not link_el:
+                        continue
+                        
+                    title = title_el.get_text(strip=True)
+                    company = comp_el.get_text(strip=True) if comp_el else "Ukendt"
+                    location_text = loc_el.get_text(strip=True) if loc_el else ""
+                    href = link_el["href"] if "href" in link_el.attrs else ""
+                    
+                    # Clean tracking params from URL
+                    clean_job_url = href.split("?")[0] if "?" in href else href
+                    
+                    postal_match = re.search(r'\b(\d{4})\b', location_text)
+                    postal = postal_match.group(1) if postal_match else ""
+                    
+                    if is_valid_job(title, postal, company, location_text):
+                        job_id_str = f"linkedin_{company}_{title}_{clean_job_url}"
+                        job_id = hashlib.md5(job_id_str.encode()).hexdigest()
+                        jobs.append(format_job(
+                            job_id=job_id,
+                            title=title,
+                            company=company,
+                            url=clean_job_url,
+                            source="LinkedIn"
+                        ))
+            except Exception as e:
+                logger.warning(f"Error querying LinkedIn for '{q}': {e}")
+                
+    return jobs
