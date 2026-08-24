@@ -52,5 +52,11 @@
     { "name": "Aarhus Tech", "url": "https://www.aarhustech.dk/job/" },
     { "name": "KMD", "url": "https://www.kmd.dk/karriere/ledige-stillinger" },
     { "name": "Visma", "url": "https://www.visma.dk/karriere/ledige-stillinger/" },
-    { "name": "Stibo Systems", "url": "https://www.stibosystems.com/careers" }
+    { "name": "Stibo Systems", "url": "https://www.stibosystems.com/careers" },
+    { "name": "Vitec Software Group (Scanrate)", "url": "https://jobs.vitecsoftware.dk/jobs" },
+    { "name": "Twoday", "url": "https://www.twoday.com/careers" },
+    { "name": "Knowit Denmark", "url": "https://www.knowit.dk/karriere/ledige-stillinger/" },
+    { "name": "Novicell", "url": "https://www.novicell.com/dk/om-novicell/karriere/" },
+    { "name": "Delegate", "url": "https://contextand.com/da/karriere-i-context/context-karriere" },
+    { "name": "Hesehus", "url": "https://www.hesehus.dk/da/karriere/ledige-stillinger" }
 ]

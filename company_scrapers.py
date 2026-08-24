@@ -163,6 +163,44 @@ async def _do_scrape_company(page: Page, url: str):
     return found_jobs, body_text, structural_hash
 
 
+async def try_teamtailor_api(company_name: str, base_url: str) -> list[dict]:
+    """Fast, direct JSON API extraction for Teamtailor-powered Danish career sites."""
+    clean_url = base_url.rstrip("/")
+    if not clean_url.endswith("/jobs"):
+        api_candidates = [f"{clean_url}/jobs.json", f"{clean_url}/jobs/jobs.json"]
+    else:
+        api_candidates = [f"{clean_url}.json", f"{clean_url}/jobs.json"]
+        
+    for api_url in api_candidates:
+        try:
+            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+                resp = await client.get(api_url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+                if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
+                    data = resp.json()
+                    items = data.get("items", [])
+                    if items:
+                        jobs = []
+                        for item in items:
+                            title = item.get("title", "").strip()
+                            link = item.get("url", "").strip()
+                            if title and link:
+                                if is_valid_job(title, "", company_name, "", bypass_geo=True):
+                                    job_id = hashlib.md5(f"{company_name}_{title}_{link}".encode()).hexdigest()
+                                    jobs.append(format_job(
+                                        job_id=job_id,
+                                        title=title,
+                                        company=company_name,
+                                        url=link,
+                                        source="TeamtailorAPI"
+                                    ))
+                        if jobs:
+                            logger.info(f"Teamtailor API found {len(jobs)} elev jobs for {company_name}")
+                            return jobs
+        except Exception:
+            pass
+    return []
+
+
 async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Semaphore) -> list[dict]:
     name = company.get("name")
     url = company.get("url")
@@ -171,6 +209,11 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
             logger.debug(f"Skipping {name}: no valid URL configured (url={url!r})")
         return []
         
+    # Fast path: Check direct Teamtailor / JSON Feed endpoint if available
+    tt_jobs = await try_teamtailor_api(name, url)
+    if tt_jobs:
+        return tt_jobs
+
     async with sem:
         logger.info(f"Crawling {name}: {url}")
         page = await context.new_page()
