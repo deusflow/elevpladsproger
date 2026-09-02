@@ -1,9 +1,10 @@
+from __future__ import annotations
 import httpx
 import xml.etree.ElementTree as ET
 import logging
 import json
 import asyncio
-from typing import Any
+from typing import Any, Optional
 from datetime import datetime
 import config
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
@@ -350,33 +351,28 @@ def build_quality_fallback_digest(batch: list[dict]) -> str:
     )
     return fallback
 
-async def ask_llm_news(articles: list[dict], target_companies: list[str], posted_news: list[str]) -> dict:
+def get_next_tip_term(pool: list[str], tip_history: dict[str, str]) -> str:
+    """tip_history: {term: last_used_iso_date}.
+    Возвращает никогда не использованный термин, либо термин с самой старой датой."""
+    unused = [t for t in pool if t not in tip_history]
+    if unused:
+        return unused[0]
+    return min(tip_history, key=tip_history.get)
+
+async def ask_llm_news(articles: list[dict], target_companies: list[str], posted_news: list[str], state: dict | None = None) -> dict:
     """
     Pass articles to LLM to check for layoffs/restructuring
     and to generate a single Russian digest post with strict factual grounding.
     """
+    tip_history = state.get("tip_history", {}) if state else {}
+    selected_category = get_next_tip_term(config.TECH_TERMS_POOL, tip_history)
+
     if (not config.GEMINI_API_KEY and not config.GROQ_API_KEY) or not articles:
-        return {"restructuring_companies": [], "digest_ru": ""}
+        return {"restructuring_companies": [], "digest_ru": "", "selected_tip_term": selected_category}
 
-    # Split posted_news into headlines and tips for separate dedup
+    # Split posted_news into headlines for separate dedup
     recent_headlines = [t for t in posted_news if not t.startswith("TIP:")]
-    recent_tips = [t.removeprefix("TIP:").strip() for t in posted_news if t.startswith("TIP:")]
-    
     recent_topics_str = "\n".join([f"- {t}" for t in recent_headlines[-15:]]) if recent_headlines else "None"
-    recent_tips_str = "\n".join([f"- {t}" for t in recent_tips[-10:]]) if recent_tips else "None"
-
-    # Pick a random category for the educational concept to ensure rich technical variety
-    import random
-    tip_categories = [
-        "Концепция или атака в кибербезопасности (например: Phishing, SQL Injection, CSRF, Zero-Trust, Man-in-the-Middle, XSS) с определением и 2 практическими пунктами защиты/работы",
-        "Архитектурный паттерн или концепция проектирования (например: Event-Driven Architecture, CQRS, Circuit Breaker, Clean Architecture, Saga, Event Sourcing) с сутью и 2 пунктами преимуществ/применения",
-        "Сетевой протокол или фундаментальная концепция (например: OSI-модель, TCP vs UDP, DNS resolution, TLS 1.3, WebSockets, gRPC, HTTP/3) с объяснением и 2 пунктами пользы/применения",
-        "Многопоточность и системное программирование (например: Deadlock, Race Condition, Mutex vs Semaphore, Memory Leaks, Garbage Collection, Coroutines) с определением и 2 пунктами предотвращения/работы",
-        "Структура данных или алгоритм (например: Hash Map vs Tree, Массивы vs Связные списки, Ring Buffer, LRU Cache, B-Tree в базах данных) с объяснением где что лучше применять и почему",
-        "Практическая фича языка или технологии (например: полезный метод в C#/Go/Python/SQL, фича Docker/Git, CLI-утилита, оптимизация запросов через EXPLAIN) с 2 практическими пунктами",
-        "Инженерная методика или DevOps-практика (например: 12-Factor App, TDD, Tracing & Observability, Semantic Versioning, Blue-Green Deployment) с сутью и 2 практическими выводами"
-    ]
-    selected_category = random.choice(tip_categories)
 
     # Enrich candidate articles with real webpage text in parallel
     async def enrich_article(art: dict) -> dict:
@@ -425,9 +421,6 @@ Task 2: Write ONE Russian tech digest post summarizing ONE real, substantive IT/
 ALREADY PUBLISHED HEADLINES (DO NOT write about these events again):
 {recent_topics_str}
 
-ALREADY PUBLISHED TIPS (DO NOT repeat these tips, tools, or concepts):
-{recent_tips_str}
-
 CRITICAL ANTI-HALLUCINATION & FACTUALITY RULES (STRICT ZERO-HALLUCINATION POLICY):
 1. ZERO HALLUCINATIONS: Every fact, company name, technical detail, and quote in your news summary MUST be strictly grounded in the provided article content.
 2. ABSOLUTELY DO NOT INVENT unmentioned facts in the news section.
@@ -456,7 +449,10 @@ TEMPLATE (follow EXACTLY):
 
 #[tag1] #[tag2] #[tag3] #[tag4]
 
-(Note for 'Полезно знать': Category for THIS post: {selected_category}. Must be COMPLETELY DIFFERENT from everything in the "ALREADY PUBLISHED TIPS" list above.)
+(Note for 'Полезно знать': Term for THIS post: {selected_category}.
+Write EXACTLY about this term — do not substitute a different concept.
+Explain it like to a self-taught junior developer: start with ONE vivid, everyday analogy in plain Russian, NO jargon in that first sentence.
+Then one short "as it works" sentence. Avoid textbook/dry phrasing.)
 
 Articles:
 {articles_snippet}
@@ -514,6 +510,7 @@ Return ONLY valid JSON:
                                 break
                                 
                             logger.info(f"Successfully generated and validated digest via Gemini API model ({g_model})")
+                            parsed["selected_tip_term"] = selected_category
                             return parsed
             except Exception as e:
                 logger.warning(f"Gemini API exception with model {g_model}: {e}")
@@ -569,11 +566,12 @@ Return ONLY valid JSON:
                                 break
                                 
                             logger.info(f"Successfully generated and validated digest via Groq fallback ({model})")
+                            parsed["selected_tip_term"] = selected_category
                             return parsed
             except Exception as e:
                 logger.error(f"Groq API exception during news analysis with model {model}: {e}")
 
-    return {"restructuring_companies": [], "digest_ru": ""}
+    return {"restructuring_companies": [], "digest_ru": "", "selected_tip_term": selected_category}
 
 async def process_news(state: dict, force_post: bool = False) -> dict:
     """Fetch news, analyze with LLM, and return restructuring companies, digest, and used term if new articles found."""
@@ -676,8 +674,9 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     articles_to_process = new_articles[:10]
     logger.info(f"Found {len(new_articles)} new articles. Generating 1 single digest post from top {len(articles_to_process)} articles...")
 
-    analysis = await ask_llm_news(articles_to_process, target_company_names, posted_news)
+    analysis = await ask_llm_news(articles_to_process, target_company_names, posted_news, state=state)
     digest_ru = analysis.get("digest_ru", "").strip()
+    selected_tip_term = analysis.get("selected_tip_term", "")
     
     if not digest_ru:
         logger.warning("LLM generation failed for all models. Using high-quality full structure fallback digest.")
@@ -700,13 +699,6 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         else:
             first_line = digest_ru.split('\n')[0][:100] # Fallback to first line
             posted_news_titles.append(first_line.strip())
-        
-        # Extract the "Полезно знать" tip text for separate tip deduplication
-        tip_match = re.search(r'Полезно знать:?\s*</b>?\s*([^<\n]+)', digest_ru)
-        if tip_match:
-            tip_name = tip_match.group(1).strip().strip("</b>").strip()
-            if len(tip_name) > 3:
-                posted_news_titles.append(f"TIP:{tip_name}")
             
         restructuring_comps.extend(analysis.get("restructuring_companies", []))
 
@@ -732,7 +724,8 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         "restructuring_companies": list(set(restructuring_comps)),
         "digests_ru": digests_ru,
         "seen_news": final_seen,
-        "posted_news_titles": posted_news_titles
+        "posted_news_titles": posted_news_titles,
+        "selected_tip_term": selected_tip_term
     }
 
 if __name__ == "__main__":

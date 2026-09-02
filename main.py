@@ -542,7 +542,13 @@ async def main():
             state["restructuring_companies"] = list(set(state.get("restructuring_companies", []) + restructuring_companies))
             
         posted_news_titles = news_result.get("posted_news_titles", [])
+        selected_tip_term = news_result.get("selected_tip_term", "")
         
+        if digests_ru and selected_tip_term:
+            state_updated = True
+            state["tip_history"] = state.get("tip_history", {})
+            state["tip_history"][selected_tip_term] = datetime.now(timezone.utc).date().isoformat()
+            
         if posted_news_titles:
             state_updated = True
             state["posted_news"] = state.get("posted_news", []) + posted_news_titles
