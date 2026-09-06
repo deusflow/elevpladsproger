@@ -46,16 +46,45 @@ KEY_ENTITIES = {
     "twitter", "threads", "instagram", "whatsapp", "signal", "telegram"
 }
 
-# Danish Tech & IT Education keywords for broad feeds (e.g. DR.dk)
+# Danish Tech, Gaming & IT Education keywords for broad feeds (e.g. DR.dk)
 DR_TECH_KEYWORDS = [
     "ai", "kunstig intelligens", "it-uddannelse", "datatekniker", "erhvervsuddannelse",
-    "eud", "eux", "it-sikkerhed", "cyber", "hacker", "hacking", "teknologi", "software",
+    "eud", "eux", "it-sikkerhed", "cyber", "teknologi", "software",
     "supercomputer", "datacenter", "digitalisering", "mitid", "tech", "datalogi",
-    "kodning", "algoritme", "robot", "cloud", "it-system", "it-svigt", "it-angreb",
+    "kodning", "algoritme", "robot", "cloud", "it-system",
     "læreplads", "skoleoplæring", "it-branchen", "tech-giganter", "meta", "google",
-    "apple", "microsoft", "openai", "nvidia", "deepseek", "chatgpt"
+    "apple", "microsoft", "openai", "nvidia", "deepseek", "chatgpt",
+    # Gaming, GameDev, 3D & Graphics
+    "spil", "gaming", "spiludvikling", "gamedev", "playstation", "xbox", "nintendo",
+    "unreal engine", "unity", "grafikkort", "gpu", "ray tracing", "konsol", "steam"
 ]
 DR_TECH_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, DR_TECH_KEYWORDS)) + r')\b', re.IGNORECASE)
+
+WOW_TECH_PATTERNS = [
+    # Gaming & GameDev & 3D Graphics & Consoles
+    r'\b(?:spil|gaming|gamer|spiludvikling|gamedev|game engine|unreal engine|unity|godot|grafik|graphics|ray tracing|path tracing|dlss|fsr|playstation|ps5|xbox|nintendo|switch 2|steam|gpu|geforce|rtx|radeon|gameplay|konsol|spilbranche|io interactive|playdead|sybo|fps|rpg|vr|virtual reality|game dev)\b',
+    # Programming, Software Architecture, Tools, Compilers & Releases
+    r'\b(?:developer|udvikler|programmering|softwareudvikling|open source|framework|compiler|c#|\.net|dotnet|python|rust|golang|typescript|javascript|api|arkitektur|architecture|database|github|gitlab|docker|kubernetes|linux kernel|release|v1\.|v2\.|algoritme|backend|frontend|microservices)\b',
+    # AI Models, Quantum, Chips & Breakthrough Engineering
+    r'\b(?:gennembrud|breakthrough|revolution|supercomputer|kvante|quantum|chip|chips|halvleder|semiconductor|processor|robot|robotik|humanoid|autonom|llm|ai-model|deepseek|openai|chatgpt|gpt-5|gpt-6|anthropic|claude|gemini|neural|innovation|opfindelse|fremtidens teknologi)\b'
+]
+
+ROUTINE_INCIDENT_PATTERNS = [
+    # Dull municipal failures, routine outages, minor administrative disputes, petty lawsuits
+    r'\b(?:nedbrud|it-svigt|retssag|stævning|sagsøgt|datatilsynet|bøde|bødeforlæg|kritik af|kommune ramt|skole ramt|hospital ramt|politiet advarer|svindel|fup|slettefejl|møgsag|aktindsigt|skattestyrelsen|kontraktstrid|udbudsskandale)\b'
+]
+
+def calculate_interest_score(title: str, description: str = "") -> int:
+    """Score articles by technical excitement, game development, programming, and innovation vs dull routine incidents."""
+    text = f"{title} {description}".lower()
+    score = 0
+    for pat in WOW_TECH_PATTERNS:
+        matches = len(re.findall(pat, text, re.IGNORECASE))
+        score += matches * 3
+    for pat in ROUTINE_INCIDENT_PATTERNS:
+        matches = len(re.findall(pat, text, re.IGNORECASE))
+        score -= matches * 4
+    return score
 
 def clean_tokens(s: str) -> set[str]:
     words = re.findall(r'\w+', s.lower())
@@ -412,20 +441,23 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], posted
 
     companies_str = ", ".join(target_companies)
 
-    prompt = f"""You are a senior IT editor for a top Telegram tech channel.
+    prompt = f"""You are a senior IT editor for a top Telegram tech & developer channel.
 
 Task 1: Check if any of these companies have layoffs/restructuring news: {companies_str}
 
-Task 2: Write ONE Russian tech digest post summarizing ONE real, substantive IT/tech article from the list.
+Task 2: Write ONE Russian tech digest post summarizing the MOST EXCITING, SUBSTANTIVE, and INNOVATIVE tech/gaming/developer article from the list.
 
 ALREADY PUBLISHED HEADLINES (DO NOT write about these events again):
 {recent_topics_str}
+
+CRITICAL EDITORIAL & CONTENT PRIORITIES:
+- HIGHEST PRIORITY: Technical breakthroughs, game development & gaming industry engineering (Unreal/Unity engines, graphics tech, physics, game mechanics, studio breakthroughs, next-gen consoles, PC gaming), developer tools, frameworks, programming languages, cutting-edge AI models, chips/robotics, and "WOW" engineering milestones.
+- STRICTLY AVOID / DE-PRIORITIZE: Do NOT choose routine municipal IT downtime, petty data privacy fines, bureaucratic glitches, local scams, or routine court disputes unless it is an unprecedented global event. Readers want inspiration, cutting-edge technology, and developer/gaming excitement!
 
 CRITICAL ANTI-HALLUCINATION & FACTUALITY RULES (STRICT ZERO-HALLUCINATION POLICY):
 1. ZERO HALLUCINATIONS: Every fact, company name, technical detail, and quote in your news summary MUST be strictly grounded in the provided article content.
 2. ABSOLUTELY DO NOT INVENT unmentioned facts in the news section.
 3. If an article is marked [PAYWALLED] or is only a short teaser, write a concise summary of only what is confirmed in the text.
-4. Priority: Real IT & Developer news in Denmark / Europe > Startups & Tech breakthroughs > General IT.
 
 FORMATTING RULES (Telegram HTML):
 - Use HTML tags: <b>bold</b>, <i>italic</i>, <code>code</code>, <a href="url">text</a>
@@ -670,9 +702,30 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         logger.info("No new news articles to process.")
         return {"restructuring_companies": [], "digests_ru": [], "seen_news": seen_news, "posted_news_titles": []}
 
-    # Limit to top 10 candidate articles for a single digest post
-    articles_to_process = new_articles[:10]
-    logger.info(f"Found {len(new_articles)} new articles. Generating 1 single digest post from top {len(articles_to_process)} articles...")
+    # Score articles by technical innovation, gaming, and dev excitement vs dull incidents
+    for art in new_articles:
+        art["interest_score"] = calculate_interest_score(art["title"], art.get("description", ""))
+
+    # Sort primarily by interest_score descending, secondarily by timestamp descending
+    new_articles.sort(key=lambda x: (x.get("interest_score", 0), x.get("timestamp", 0)), reverse=True)
+
+    # Select candidate articles with source diversity (max 2 per source) to prevent any single outlet from dominating
+    articles_to_process: list[dict[str, Any]] = []
+    source_counts: dict[str, int] = {}
+    for art in new_articles:
+        src = art.get("source", "Unknown")
+        if source_counts.get(src, 0) < 2:
+            articles_to_process.append(art)
+            source_counts[src] = source_counts.get(src, 0) + 1
+        if len(articles_to_process) >= 10:
+            break
+
+    if not articles_to_process:
+        articles_to_process = new_articles[:10]
+
+    top_title = articles_to_process[0].get('title', '')[:50] if articles_to_process else 'None'
+    top_score = articles_to_process[0].get('interest_score', 0) if articles_to_process else 0
+    logger.info(f"Found {len(new_articles)} new articles. Selected {len(articles_to_process)} high-interest candidate articles (top score {top_score}: '{top_title}')...")
 
     analysis = await ask_llm_news(articles_to_process, target_company_names, posted_news, state=state)
     digest_ru = analysis.get("digest_ru", "").strip()

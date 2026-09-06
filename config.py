@@ -147,15 +147,18 @@ CITY_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, MIDTJYLLAND_CITIES)
 EXCLUSION_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, EXCLUDE_KEYWORDS)) + r')\b')
 TARGET_KEYWORD_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, TARGET_KEYWORDS)) + r')\b')
 
-# RSS Feeds for Danish IT & Startups
+# RSS Feeds for Danish IT, Gaming & Tech Innovations
 RSS_FEEDS = {
+    "Gamereactor Gaming": "https://www.gamereactor.dk/rss/rss.php",
+    "Games Denmark": "https://gamesdenmark.dk/feed",
+    "Pixel.tv Gaming": "https://pixel.tv/feed/",
+    "Ars Technica": "https://arstechnica.com/feed/",
     "Version2 News": "https://www.version2.dk/rss",
     "Version2 Blogs": "https://www.version2.dk/blogs/rss",
     "Computerworld": "https://www.computerworld.dk/rss/all",
     "CPH Post Tech": "https://cphpost.dk/category/news/technology/feed/",
     "Videnskab.dk Tech": "https://videnskab.dk/wp-json/rss/v1/feeds?topics=teknologi",
-    "DR Viden": "https://www.dr.dk/nyheder/service/feeds/viden",
-    "DR Nyheder": "https://www.dr.dk/nyheder/service/feeds/allenyheder"
+    "DR Viden": "https://www.dr.dk/nyheder/service/feeds/viden"
 }
 
 TECH_TERMS_POOL = [
