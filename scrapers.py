@@ -2,11 +2,13 @@ import re
 import json
 import asyncio
 import os
+import urllib.parse
 from typing import Any, Optional
 import hashlib
 from datetime import datetime, timezone
 from patchright.async_api import Page
 import httpx
+from bs4 import BeautifulSoup
 import config
 from config import logger
 import functools
@@ -521,7 +523,6 @@ async def scrape_linkedin(page: Page) -> list[dict]:
                     logger.debug(f"LinkedIn guest endpoint returned {resp.status_code} for '{q}'")
                     continue
                 
-                from bs4 import BeautifulSoup
                 soup = BeautifulSoup(resp.text, "html.parser")
                 cards = soup.select("li, .job-search-card, .base-search-card")
                 
