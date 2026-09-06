@@ -38,8 +38,10 @@ def analyze_and_predict(state: dict) -> list[str]:
     # We want to warn 1 month in advance. 
     # E.g. if now is January, we warn about February.
     target_month = current_month + 1
+    target_year = current_year
     if target_month > 12:
         target_month = 1
+        target_year = current_year + 1
         
     predictions_sent = state.get("predictions_sent", {})
     
@@ -49,7 +51,7 @@ def analyze_and_predict(state: dict) -> list[str]:
     for company, months in SEED_CYCLES.items():
         if target_month in months:
             # Check if we already alerted this year for this month
-            alert_key = f"{company}_{current_year}_{target_month}"
+            alert_key = f"{company}_{target_year}_{target_month}"
             if not predictions_sent.get(alert_key):
                 # Map month number to Danish string
                 month_names = {

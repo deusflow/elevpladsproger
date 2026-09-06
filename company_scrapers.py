@@ -292,7 +292,7 @@ async def scrape_custom_companies(context: BrowserContext, dynamic_companies: Op
                 companies.append(dc)
 
     if not companies:
-        return jobs
+        return []
 
     logger.info(f"Crawling {len(companies)} custom companies in parallel...")
     

@@ -32,6 +32,11 @@ def with_error_screenshot(scraper_name: str):
         return wrapper
     return decorator
 
+NON_MIDTJYLLAND_PATTERN = re.compile(
+    r'\b(?:københavn|copenhagen|storkøbenhavn|hovedstaden|frederiksberg|nordsjælland|sjælland|roskilde|helsingør|hillerød|lyngby|ballerup|taastrup|glostrup|herlev|hvidovre|brøndby|albertslund|ishøj|greve|køge|fyn|odense|svendborg|middelfart|nyborg|bornholm)\b',
+    re.IGNORECASE
+)
+
 def is_valid_job(title: str, postal_code: str, company: str = "", location: str = "", bypass_geo: bool = False) -> bool:
     title_lower = title.lower()
     company_lower = company.lower()
@@ -44,6 +49,10 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
             if postal_code in config.TARGET_POSTAL_CODES:
                 is_in_region = True
         else:
+            # Exclude explicit non-target regions (Copenhagen, Sjælland, Fyn)
+            if NON_MIDTJYLLAND_PATTERN.search(location_lower):
+                return False
+
             if config.CITY_PATTERN.search(location_lower) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower or "danmark" in location_lower:
                 is_in_region = True
                 

@@ -405,7 +405,10 @@ async def main():
                         state["last_proff_scrape"] = now_dt.isoformat()
                         await save_state(state)
                 
-                dynamic_companies = state.get("dynamic_companies", [])
+                dynamic_companies = [
+                    c for c in state.get("dynamic_companies", [])
+                    if c.get("url") and c["url"].strip().startswith("http")
+                ]
 
                 # Run all scrapers in parallel
                 tasks = [
@@ -457,16 +460,19 @@ async def main():
         state["scraper_failures"] = scraper_failures
         state["notified_scraper_failures"] = notified_scraper_failures
 
-        existing_ids = {jid for jid, j in old_jobs.items()}
+        # Track currently active jobs to avoid alerting on existing active postings
+        # but allow expired postings from previous cycles to be re-alerted if reopened!
+        active_ids = {jid for jid, j in old_jobs.items() if j.get("status") == "active"}
         new_jobs = []
         changed_companies = []
         new_company_hashes = old_company_hashes.copy()
         
-        # Track seen (company, title) pairs to deduplicate across sources
-        seen_titles = set()
+        # Track seen (company, title) pairs ONLY for currently ACTIVE jobs
+        seen_active_titles = set()
         for jdata in old_jobs.values():
-            key = (jdata.get("company", "").lower().strip(), jdata.get("title", "").lower().strip())
-            seen_titles.add(key)
+            if jdata.get("status") == "active":
+                key = (jdata.get("company", "").lower().strip(), jdata.get("title", "").lower().strip())
+                seen_active_titles.add(key)
         
         for item in valid_items:
             if item.get("type") == "hash":
@@ -484,11 +490,18 @@ async def main():
                 new_company_hashes[c_name] = str(c_hash)
             else:
                 dedup_key = (item.get("company", "").lower().strip(), item.get("title", "").lower().strip())
-                if item["job_id"] not in existing_ids and dedup_key not in seen_titles:
+                job_id = item["job_id"]
+                
+                # A job is new if it's not currently active and its title is not active in this run
+                if job_id not in active_ids and dedup_key not in seen_active_titles:
                     item["discovered_at"] = datetime.now(timezone.utc).isoformat()
+                    item["status"] = "active"
                     new_jobs.append(item)
-                    existing_ids.add(item["job_id"])
-                    seen_titles.add(dedup_key)
+                    active_ids.add(job_id)
+                    seen_active_titles.add(dedup_key)
+                elif job_id in active_ids:
+                    # Update heartbeat timestamp of active job
+                    old_jobs[job_id]["last_seen_at"] = datetime.now(timezone.utc).isoformat()
 
         logger.info(f"Discovered {len(new_jobs)} new jobs. {len(changed_companies)} companies changed structure.")
         

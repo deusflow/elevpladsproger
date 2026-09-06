@@ -25,21 +25,45 @@ async def discover_it_companies(context: BrowserContext) -> list[dict]:
         await page.goto(search_url, wait_until="networkidle", timeout=30000)
         await page.wait_for_timeout(3000)
         
-        # Extract company names and profile links from search results in one fast browser evaluation
+        # Extract company names, profile links, and direct website URLs from search results
         links_data = await page.evaluate("""() => {
-            return Array.from(document.querySelectorAll('a')).map(a => ({
-                text: (a.innerText || a.textContent || '').trim(),
-                href: a.getAttribute('href') || ''
-            })).filter(l => l.text.length > 2 && l.href.includes('/virksomhed/'));
+            const results = [];
+            const cards = document.querySelectorAll('article, li, div[class*="search-result"], div[class*="Listing"], div[class*="company"]');
+            for (const card of cards) {
+                const nameLink = card.querySelector('a[href*="/virksomhed/"], a[href*="/company/"]');
+                if (!nameLink) continue;
+                const name = (nameLink.innerText || nameLink.textContent || '').trim();
+                if (name.length < 2) continue;
+                
+                let website = '';
+                const extLinks = Array.from(card.querySelectorAll('a[href^="http"]'));
+                for (const a of extLinks) {
+                    const h = a.getAttribute('href') || '';
+                    if (!h.includes('proff.dk') && !h.includes('eniro') && !h.includes('krak') && !h.includes('facebook') && !h.includes('linkedin')) {
+                        website = h;
+                        break;
+                    }
+                }
+                
+                results.push({
+                    name: name,
+                    href: nameLink.getAttribute('href') || '',
+                    website: website
+                });
+            }
+            return results;
         }""")
         
         for link in links_data:
-            name = link["text"]
+            name = link["name"]
             href = link["href"]
-            if name not in [d["name"] for d in discovered]:
+            website = link.get("website", "").strip()
+            
+            # Only add discovered companies that have a valid, crawlable website URL
+            if website and website.startswith("http") and name not in [d["name"] for d in discovered]:
                 discovered.append({
                     "name": name,
-                    "url": "", # Website URL needs to be resolved from profile or DuckDuckGo
+                    "url": website,
                     "proff_url": f"https://www.proff.dk{href}" if href.startswith("/") else href
                 })
                 
