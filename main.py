@@ -3,6 +3,7 @@ from typing import Optional, Any
 import json
 import os
 import html as html_lib
+import re
 import httpx
 from datetime import datetime, timezone
 from patchright.async_api import async_playwright
@@ -173,8 +174,75 @@ def escape_html(text: str) -> str:
     return html_lib.escape(str(text))
 
 
-async def _send_telegram_message(client: httpx.AsyncClient, text: str, parse_mode: str = "HTML") -> bool:
-    """Send a single Telegram message with retry logic. Returns True on success."""
+def split_telegram_html(text: str, max_chunk_size: int = 3900) -> list[str]:
+    """
+    Splits long messages into valid Telegram HTML chunks (< 4096 chars).
+    Balances open HTML tags (b, i, code, pre, a, u, s) across boundaries
+    so Telegram never rejects messages with 400 Bad Request or unclosed tags.
+    """
+    if len(text) <= max_chunk_size:
+        return [text]
+
+    chunks = []
+    current_text = text
+    tag_re = re.compile(r"<(/?)(\w+)(?:\s+[^>]*)?>", re.DOTALL)
+
+    def get_open_tags(html_segment: str) -> list[tuple[str, str]]:
+        stack = []
+        for m in tag_re.finditer(html_segment):
+            is_closing = bool(m.group(1))
+            tag_name = m.group(2).lower()
+            full_tag = m.group(0)
+            if not is_closing:
+                stack.append((tag_name, full_tag))
+            else:
+                for i in range(len(stack) - 1, -1, -1):
+                    if stack[i][0] == tag_name:
+                        stack.pop(i)
+                        break
+        return stack
+
+    while len(current_text) > max_chunk_size:
+        candidate_pos = -1
+        # Try double newline first (paragraph/section break)
+        p2 = current_text.rfind("\n\n", 0, max_chunk_size)
+        if p2 != -1 and p2 > max_chunk_size // 3:
+            candidate_pos = p2 + 2
+        else:
+            # Try single newline (bullet / sentence break)
+            p1 = current_text.rfind("\n", 0, max_chunk_size)
+            if p1 != -1 and p1 > max_chunk_size // 3:
+                candidate_pos = p1 + 1
+            else:
+                # Try space
+                ps = current_text.rfind(" ", 0, max_chunk_size)
+                if ps != -1 and ps > max_chunk_size // 3:
+                    candidate_pos = ps + 1
+                else:
+                    candidate_pos = max_chunk_size
+
+        chunk = current_text[:candidate_pos].rstrip()
+        remainder = current_text[candidate_pos:].lstrip("\n")
+
+        # Balance open tags across the boundary
+        open_tags = get_open_tags(chunk)
+        if open_tags:
+            closing_tags = "".join(f"</{tag_name}>" for tag_name, _ in reversed(open_tags))
+            chunk = chunk + closing_tags
+            reopen_tags = "".join(full_tag for _, full_tag in open_tags)
+            remainder = reopen_tags + remainder
+
+        chunks.append(chunk)
+        current_text = remainder
+
+    if current_text.strip():
+        chunks.append(current_text)
+
+    return chunks
+
+
+async def _send_single_telegram_message(client: httpx.AsyncClient, text: str, parse_mode: str = "HTML") -> bool:
+    """Send a single Telegram message of valid length with retry logic. Returns True on success."""
     if not text or not text.strip():
         logger.warning("Attempted to send empty Telegram message — skipped.")
         return False
@@ -218,6 +286,29 @@ async def _send_telegram_message(client: httpx.AsyncClient, text: str, parse_mod
 
     logger.error(f"Failed to send Telegram message after 3 attempts. Message starts with: {text[:100]}...")
     return False
+
+
+async def _send_telegram_message(client: httpx.AsyncClient, text: str, parse_mode: str = "HTML") -> bool:
+    """
+    Sends a message to Telegram, automatically splitting into safe chunks
+    (< 3900 chars) if the text exceeds Telegram's 4096-character limit.
+    """
+    if not text or not text.strip():
+        return False
+
+    if len(text) > 3900:
+        logger.info(f"Message length ({len(text)}) exceeds safe Telegram threshold. Splitting into chunks...")
+        chunks = split_telegram_html(text, max_chunk_size=3900)
+        overall_success = True
+        for i, chunk in enumerate(chunks):
+            ok = await _send_single_telegram_message(client, chunk, parse_mode=parse_mode)
+            if not ok:
+                overall_success = False
+            if i < len(chunks) - 1:
+                await asyncio.sleep(0.5)
+        return overall_success
+
+    return await _send_single_telegram_message(client, text, parse_mode=parse_mode)
 
 
 async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: Optional[list[str]] = None, news_digest: str = "", restructuring_companies: Optional[list[str]] = None):
@@ -277,14 +368,21 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
     if current_msg and jobs:
         messages.append(current_msg)
         
-    # Append cover letters as separate messages to avoid max length issues
+    # Append cover letters as separate messages, chunking if long (> 3400 chars)
     for job in jobs:
         draft = job.get("cover_letter_draft")
         if draft and len(draft) > 10:
             title = escape_html(job['title'])
             company = escape_html(job['company'])
-            draft_msg = f"📝 <b>Udkast til ansøgning</b>\n🏢 {company} - {title}\n\n<code>{escape_html(draft)}</code>"
-            messages.append(draft_msg)
+            escaped_draft = escape_html(draft)
+            if len(escaped_draft) > 3400:
+                draft_chunks = split_telegram_html(f"<code>{escaped_draft}</code>", max_chunk_size=3400)
+                for idx, chunk in enumerate(draft_chunks, 1):
+                    header = f"📝 <b>Udkast til ansøgning (Del {idx}/{len(draft_chunks)})</b>\n🏢 {company} - {title}\n\n"
+                    messages.append(header + chunk)
+            else:
+                draft_msg = f"📝 <b>Udkast til ansøgning</b>\n🏢 {company} - {title}\n\n<code>{escaped_draft}</code>"
+                messages.append(draft_msg)
 
     # Build company change notifications in HTML format
     current_msg = "⚠️ <b>Ændringer opdaget på karrieresider</b>\n\n" if changed_companies else ""
@@ -332,6 +430,9 @@ async def main():
 
     state = await load_state()
     state_updated = False
+    
+    # Synchronize persistent CVR validation cache
+    company_validator.set_validation_cache(state.get("cvr_cache", {}))
     
     if mode in ['jobs', 'all']:
         old_jobs_list = state.get("jobs", [])
@@ -604,6 +705,12 @@ async def main():
             if digest:
                 await notify_telegram([], [], [], digest, active_restructuring)
             
+    # Persist updated CVR validation cache if changed
+    new_cvr_cache = company_validator.get_validation_cache()
+    if new_cvr_cache != state.get("cvr_cache"):
+        state["cvr_cache"] = new_cvr_cache
+        state_updated = True
+
     if state_updated:
         await save_state(state)
 
