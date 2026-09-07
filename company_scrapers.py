@@ -108,7 +108,7 @@ Page Text:
                     for j in raw_jobs:
                         title = j.get("title", "").strip()
                         job_url = j.get("url", "").strip() or page_url
-                        if title and is_valid_job(title, "", company_name, ""):
+                        if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
                             extracted.append({
                                 "title": title,
                                 "url": job_url
@@ -128,7 +128,9 @@ Page Text:
 
 @retry(stop=stop_after_attempt(2), wait=wait_fixed(2))
 async def _do_scrape_company(page: Page, url: str):
-    await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+    response = await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+    if response and response.status >= 400:
+        raise Exception(f"HTTP {response.status} returned for {url}")
     await page.wait_for_load_state("domcontentloaded")
     
     found_jobs: list[dict] = []
@@ -270,7 +272,7 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
                 os.makedirs("screenshots", exist_ok=True)
                 safe_name = name.replace(' ', '_').lower()
                 screenshot_path = f"screenshots/{safe_name}_error.png"
-                await page.screenshot(path=screenshot_path)
+                await page.screenshot(path=screenshot_path, timeout=3000)
                 logger.info(f"Saved error screenshot for {name} to {screenshot_path}")
             except Exception as se:
                 logger.error(f"Failed to capture screenshot for {name}: {se}")

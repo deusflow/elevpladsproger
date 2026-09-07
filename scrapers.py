@@ -6,8 +6,13 @@ import urllib.parse
 from typing import Any, Optional
 import hashlib
 from datetime import datetime, timezone
-from patchright.async_api import Page
-import httpx
+try:
+    from patchright.async_api import Page
+except ImportError:
+    try:
+        from playwright.async_api import Page  # type: ignore
+    except ImportError:
+        Page = Any  # type: ignore
 from bs4 import BeautifulSoup
 import config
 from config import logger
@@ -24,7 +29,7 @@ def with_error_screenshot(scraper_name: str):
                 try:
                     os.makedirs("screenshots", exist_ok=True)
                     safe_name = scraper_name.replace(' ', '_').lower()
-                    await page.screenshot(path=f"screenshots/{safe_name}_error.png")
+                    await page.screenshot(path=f"screenshots/{safe_name}_error.png", timeout=3000)
                 except Exception as se:
                     logger.error(f"Could not take screenshot for {scraper_name}: {se}")
                 # Return error marker so main.py can track scraper health
@@ -74,7 +79,8 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
     is_it_role = "datatekniker" in title_lower or "it" in title_lower.split() or "it-" in title_lower or "data" in title_lower or "software" in title_lower or "programm" in title_lower or "cyber" in title_lower
 
     if is_target_enterprise:
-        return True
+        # Require IT relevance even for target enterprises to filter out dairy, warehouse, or sales apprentices
+        return bool(has_target_skill or is_it_role)
         
     if has_target_skill:
         return True
@@ -205,39 +211,46 @@ async def scrape_jobnet(page: Page) -> list[dict]:
 
 @with_error_screenshot("IT-Jobbank")
 async def scrape_itjobbank(page: Page) -> list[dict]:
-
     jobs = []
+    seen_job_ids = set()
     logger.info("Scraping IT-Jobbank...")
     for q in config.JOB_QUERIES:
         for page_num in range(1, 4):  # Check up to 3 pages
-            url = f"https://www.it-jobbank.dk/job/midtjylland?q={q}&page={page_num}"
+            url = f"https://www.it-jobbank.dk/jobsoegning/region-midtjylland?q={q}&page={page_num}"
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
             try:
-                await page.wait_for_selector(".job-search-result, .job-item, .result-item", timeout=15000)
-            except Exception as e:
-                # Distinguish "no results" from "site changed layout"
-                page_text = await page.inner_text("body")
-                if "ingen" in page_text.lower() or "0 job" in page_text.lower():
-                    if page_num == 1:
-                        logger.info(f"IT-Jobbank confirmed 0 results for query '{q}'.")
-                else:
-                    if page_num == 1:
-                        logger.warning(f"IT-Jobbank selectors not found for query '{q}' — site may have changed layout. Error: {e}")
-                        try:
-                            os.makedirs("screenshots", exist_ok=True)
-                            await page.screenshot(path=f"screenshots/empty_itjobbank_{q}.png")
-                        except Exception as se:
-                            logger.debug(f"Screenshot failed for IT-Jobbank: {se}")
-                break  # Stop paginating if no results
+                await page.wait_for_selector(".jobsearch-result, .PaidJob, #jobsearch-app, .job-item, .result-item", timeout=8000)
+            except Exception:
+                pass
 
-            listings = await page.locator(".job-item, .result-item").all()
+            # Fast check if zero results using window.Stash or page text
+            hitcount = await page.evaluate("""() => {
+                try {
+                    return window.Stash?.['jobsearch/result_app']?.storeData?.searchResponse?.hitcount ?? null;
+                } catch(e) { return null; }
+            }""")
+            
+            page_text = await page.inner_text("body")
+            if hitcount == 0 or "0 job" in page_text.lower() or "ingen ledige" in page_text.lower() or "ingen resultater" in page_text.lower():
+                if page_num == 1:
+                    logger.info(f"IT-Jobbank confirmed 0 results for query '{q}'.")
+                break
+
+            listings = await page.locator(".jobsearch-result, .PaidJob, .job-item, .result-item").all()
             if not listings:
+                if page_num == 1:
+                    logger.warning(f"IT-Jobbank selectors not found for query '{q}' — site may have changed layout.")
+                    try:
+                        os.makedirs("screenshots", exist_ok=True)
+                        await page.screenshot(path=f"screenshots/empty_itjobbank_{q}.png", timeout=3000)
+                    except Exception as se:
+                        logger.debug(f"Screenshot failed for IT-Jobbank: {se}")
                 break
                 
             logger.info(f"IT-Jobbank found {len(listings)} raw listings for query '{q}' on page {page_num}")
             for listing in listings:
-                title_el = listing.locator("h3 a, h2 a, .job-title a").first
+                title_el = listing.locator("h4 a, h3 a, h2 a, .job-title a, a[data-click*='job-title']").first
                 if not await title_el.count():
                     continue
                 title = (await title_el.inner_text()).strip()
@@ -247,10 +260,10 @@ async def scrape_itjobbank(page: Page) -> list[dict]:
                 if "?" in job_url and not "job=" in job_url:
                     job_url = job_url.split("?")[0]
 
-                company_el = listing.locator(".company-name, .employer, .job-company").first
+                company_el = listing.locator(".company-name, .employer, .job-company, .jix_robotjob--company strong, a[data-click*='company-name']").first
                 company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
 
-                location_el = listing.locator(".job-location, .location").first
+                location_el = listing.locator(".job-location, .location, .area, .jix_robotjob--area").first
                 location_text = (await location_el.inner_text()).strip() if await location_el.count() else ""
                 
                 postal_match = re.search(r'\b(\d{4})\b', location_text)
@@ -259,13 +272,15 @@ async def scrape_itjobbank(page: Page) -> list[dict]:
                 if is_valid_job(title, postal, company, location_text):
                     job_id_str = f"{company}_{title}_{job_url}"
                     job_id = hashlib.md5(job_id_str.encode()).hexdigest()
-                    jobs.append(format_job(
-                        job_id=job_id,
-                        title=title,
-                        company=company,
-                        url=job_url,
-                        source="ITJobbank"
-                    ))
+                    if job_id not in seen_job_ids:
+                        seen_job_ids.add(job_id)
+                        jobs.append(format_job(
+                            job_id=job_id,
+                            title=title,
+                            company=company,
+                            url=job_url,
+                            source="ITJobbank"
+                        ))
     return jobs
 
 async def scrape_thehub() -> list[dict]:
@@ -335,6 +350,7 @@ async def scrape_thehub() -> list[dict]:
 @with_error_screenshot("Jobindex")
 async def scrape_jobindex(page: Page) -> list[dict]:
     jobs = []
+    seen_job_ids = set()
     logger.info("Scraping Jobindex...")
     for q in config.JOB_QUERIES:
         for page_num in range(1, 4): # check up to 3 pages
@@ -342,7 +358,7 @@ async def scrape_jobindex(page: Page) -> list[dict]:
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             try:
                 # PaidJob is the primary class used in Jobindex SSR rendering
-                await page.wait_for_selector(".PaidJob, .jobsearch-result", timeout=15000)
+                await page.wait_for_selector(".PaidJob, .jobsearch-result", timeout=8000)
             except Exception as e:
                 # Distinguish "no results" from "site changed layout"
                 page_text = await page.inner_text("body")
@@ -354,7 +370,7 @@ async def scrape_jobindex(page: Page) -> list[dict]:
                         logger.warning(f"Jobindex selectors not found for query '{q}' — site may have changed layout. Error: {e}")
                         try:
                             os.makedirs("screenshots", exist_ok=True)
-                            await page.screenshot(path=f"screenshots/empty_jobindex_{q}.png")
+                            await page.screenshot(path=f"screenshots/empty_jobindex_{q}.png", timeout=3000)
                         except Exception as se:
                             logger.debug(f"Screenshot failed for Jobindex: {se}")
                 break
@@ -393,13 +409,15 @@ async def scrape_jobindex(page: Page) -> list[dict]:
                 if is_valid_job(title, postal, company, location_text):
                     job_id_str = f"{company}_{title}_{job_url}"
                     job_id = hashlib.md5(job_id_str.encode()).hexdigest()
-                    jobs.append(format_job(
-                        job_id=job_id,
-                        title=title,
-                        company=company,
-                        url=job_url,
-                        source="Jobindex"
-                    ))
+                    if job_id not in seen_job_ids:
+                        seen_job_ids.add(job_id)
+                        jobs.append(format_job(
+                            job_id=job_id,
+                            title=title,
+                            company=company,
+                            url=job_url,
+                            source="Jobindex"
+                        ))
     return jobs
 
 async def scrape_elevplads() -> list[dict]:
@@ -506,8 +524,7 @@ async def scrape_techjob(page: Page) -> list[dict]:
             
     return jobs
 
-@with_error_screenshot("LinkedIn")
-async def scrape_linkedin(page: Page) -> list[dict]:
+async def scrape_linkedin() -> list[dict]:
     """Scrape public LinkedIn job listings in Denmark / Midtjylland for apprenticeships and elevpladser."""
     jobs = []
     logger.info("Scraping LinkedIn Denmark Jobs...")
@@ -522,50 +539,53 @@ async def scrape_linkedin(page: Page) -> list[dict]:
     if config.PROXY_URL:
         client_kwargs["proxy"] = config.PROXY_URL
         
-    async with httpx.AsyncClient(**client_kwargs) as client:
-        for q in queries:
-            try:
-                # LinkedIn guest search API with geoId=104514075 (Denmark)
-                url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={urllib.parse.quote(q)}&location=Danmark&geoId=104514075&f_TPR=r2592000"
-                resp = await client.get(url, headers=headers)
-                if resp.status_code != 200:
-                    logger.debug(f"LinkedIn guest endpoint returned {resp.status_code} for '{q}'")
-                    continue
-                
-                soup = BeautifulSoup(resp.text, "html.parser")
-                cards = soup.select("li, .job-search-card, .base-search-card")
-                
-                for card in cards:
-                    title_el = card.select_one(".base-search-card__title, h3")
-                    comp_el = card.select_one(".base-search-card__subtitle, h4")
-                    loc_el = card.select_one(".job-search-card__location, span[class*='location']")
-                    link_el = card.select_one("a.base-card__full-link, a[href*='/jobs/view/']")
-                    
-                    if not title_el or not link_el:
+    try:
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            for q in queries:
+                try:
+                    # LinkedIn guest search API with geoId=104514075 (Denmark)
+                    url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords={urllib.parse.quote(q)}&location=Danmark&geoId=104514075&f_TPR=r2592000"
+                    resp = await client.get(url, headers=headers)
+                    if resp.status_code != 200:
+                        logger.debug(f"LinkedIn guest endpoint returned {resp.status_code} for '{q}'")
                         continue
+                    
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    cards = soup.select("li, .job-search-card, .base-search-card")
+                    
+                    for card in cards:
+                        title_el = card.select_one(".base-search-card__title, h3")
+                        comp_el = card.select_one(".base-search-card__subtitle, h4")
+                        loc_el = card.select_one(".job-search-card__location, span[class*='location']")
+                        link_el = card.select_one("a.base-card__full-link, a[href*='/jobs/view/']")
                         
-                    title = title_el.get_text(strip=True)
-                    company = comp_el.get_text(strip=True) if comp_el else "Ukendt"
-                    location_text = loc_el.get_text(strip=True) if loc_el else ""
-                    href = link_el["href"] if "href" in link_el.attrs else ""
-                    
-                    # Clean tracking params from URL
-                    clean_job_url = href.split("?")[0] if "?" in href else href
-                    
-                    postal_match = re.search(r'\b(\d{4})\b', location_text)
-                    postal = postal_match.group(1) if postal_match else ""
-                    
-                    if is_valid_job(title, postal, company, location_text):
-                        job_id_str = f"linkedin_{company}_{title}_{clean_job_url}"
-                        job_id = hashlib.md5(job_id_str.encode()).hexdigest()
-                        jobs.append(format_job(
-                            job_id=job_id,
-                            title=title,
-                            company=company,
-                            url=clean_job_url,
-                            source="LinkedIn"
-                        ))
-            except Exception as e:
-                logger.warning(f"Error querying LinkedIn for '{q}': {e}")
-                
-    return jobs
+                        if not title_el or not link_el:
+                            continue
+                            
+                        title = title_el.get_text(strip=True)
+                        company = comp_el.get_text(strip=True) if comp_el else "Ukendt"
+                        location_text = loc_el.get_text(strip=True) if loc_el else ""
+                        href = link_el["href"] if "href" in link_el.attrs else ""
+                        
+                        # Clean tracking params from URL
+                        clean_job_url = href.split("?")[0] if "?" in href else href
+                        
+                        postal_match = re.search(r'\b(\d{4})\b', location_text)
+                        postal = postal_match.group(1) if postal_match else ""
+                        
+                        if is_valid_job(title, postal, company, location_text):
+                            job_id_str = f"linkedin_{company}_{title}_{clean_job_url}"
+                            job_id = hashlib.md5(job_id_str.encode()).hexdigest()
+                            jobs.append(format_job(
+                                job_id=job_id,
+                                title=title,
+                                company=company,
+                                url=clean_job_url,
+                                source="LinkedIn"
+                            ))
+                except Exception as e:
+                    logger.warning(f"Error querying LinkedIn for '{q}': {e}")
+        return jobs
+    except Exception as e:
+        logger.error(f"Error in LinkedIn scraper: {e}")
+        return [{"type": "scraper_error", "source": "LinkedIn", "error": str(e)}]

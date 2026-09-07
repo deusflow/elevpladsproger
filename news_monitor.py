@@ -61,8 +61,8 @@ DR_TECH_KEYWORDS = [
 DR_TECH_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, DR_TECH_KEYWORDS)) + r')\b', re.IGNORECASE)
 
 WOW_TECH_PATTERNS = [
-    # Gaming & GameDev & 3D Graphics & Consoles
-    r'\b(?:spil|gaming|gamer|spiludvikling|gamedev|game engine|unreal engine|unity|godot|grafik|graphics|ray tracing|path tracing|dlss|fsr|playstation|ps5|xbox|nintendo|switch 2|steam|gpu|geforce|rtx|radeon|gameplay|konsol|spilbranche|io interactive|playdead|sybo|fps|rpg|vr|virtual reality|game dev)\b',
+    # Gaming & GameDev & 3D Graphics & Consoles & WebGPU
+    r'\b(?:spil|gaming|gamer|spiludvikling|gamedev|game engine|unreal engine|unity|godot|grafik|graphics|ray tracing|path tracing|dlss|fsr|webgpu|vulkan|directx|shaders|playstation|ps5|xbox|nintendo|switch 2|steam|gpu|geforce|rtx|radeon|gameplay|konsol|spilbranche|io interactive|playdead|sybo|fps|rpg|vr|virtual reality|game dev|procedural)\b',
     # Programming, Software Architecture, Tools, Compilers & Releases
     r'\b(?:developer|udvikler|programmering|softwareudvikling|open source|framework|compiler|c#|\.net|dotnet|python|rust|golang|typescript|javascript|api|arkitektur|architecture|database|github|gitlab|docker|kubernetes|linux kernel|release|v1\.|v2\.|algoritme|backend|frontend|microservices)\b',
     # AI Models, Quantum, Chips & Breakthrough Engineering
@@ -70,8 +70,8 @@ WOW_TECH_PATTERNS = [
 ]
 
 ROUTINE_INCIDENT_PATTERNS = [
-    # Dull municipal failures, routine outages, minor administrative disputes, petty lawsuits
-    r'\b(?:nedbrud|it-svigt|retssag|stævning|sagsøgt|datatilsynet|bøde|bødeforlæg|kritik af|kommune ramt|skole ramt|hospital ramt|politiet advarer|svindel|fup|slettefejl|møgsag|aktindsigt|skattestyrelsen|kontraktstrid|udbudsskandale)\b'
+    # Dull municipal failures, routine outages, minor administrative disputes, petty lawsuits, repetitive malware/phishing/DDoS
+    r'\b(?:nedbrud|it-svigt|retssag|stævning|sagsøgt|datatilsynet|bøde|bødeforlæg|kritik af|kommune ramt|skole ramt|hospital ramt|politiet advarer|svindel|fup|slettefejl|møgsag|aktindsigt|skattestyrelsen|kontraktstrid|udbudsskandale|phishing|ransomware|ddos|hackerangreb|angreb rammer|angreb mod|hacket|databrud|sikkerhedsbrist|it-kriminalitet|afpresning)\b'
 ]
 
 def calculate_interest_score(title: str, description: str = "") -> int:
@@ -80,10 +80,10 @@ def calculate_interest_score(title: str, description: str = "") -> int:
     score = 0
     for pat in WOW_TECH_PATTERNS:
         matches = len(re.findall(pat, text, re.IGNORECASE))
-        score += matches * 3
+        score += matches * 4
     for pat in ROUTINE_INCIDENT_PATTERNS:
         matches = len(re.findall(pat, text, re.IGNORECASE))
-        score -= matches * 4
+        score -= matches * 6
     return score
 
 def clean_tokens(s: str) -> set[str]:
@@ -323,7 +323,7 @@ Return JSON ONLY:
             url = "https://api.groq.com/openai/v1/chat/completions"
             headers = {"Authorization": f"Bearer {config.GROQ_API_KEY}", "Content-Type": "application/json"}
             payload = {
-                "model": "llama-3.1-8b-instant",
+                "model": "openai/gpt-oss-20b",
                 "messages": [
                     {"role": "system", "content": "You are a JSON fact-checker. Output ONLY valid JSON."},
                     {"role": "user", "content": prompt}
@@ -451,8 +451,8 @@ ALREADY PUBLISHED HEADLINES (DO NOT write about these events again):
 {recent_topics_str}
 
 CRITICAL EDITORIAL & CONTENT PRIORITIES:
-- HIGHEST PRIORITY: Technical breakthroughs, game development & gaming industry engineering (Unreal/Unity engines, graphics tech, physics, game mechanics, studio breakthroughs, next-gen consoles, PC gaming), developer tools, frameworks, programming languages, cutting-edge AI models, chips/robotics, and "WOW" engineering milestones.
-- STRICTLY AVOID / DE-PRIORITIZE: Do NOT choose routine municipal IT downtime, petty data privacy fines, bureaucratic glitches, local scams, or routine court disputes unless it is an unprecedented global event. Readers want inspiration, cutting-edge technology, and developer/gaming excitement!
+- HIGHEST PRIORITY: Technical breakthroughs, game development & gaming industry engineering (Unreal Engine 5, Unity, Godot, WebGPU/Vulkan graphics, physics, game mechanics, PC/console tech, studio innovations), developer tools, modern programming languages & frameworks (Rust, C#, Go, Python, TypeScript), cutting-edge AI models/engineering, hardware/semiconductors, and inspiring "WOW" milestones.
+- STRICTLY DE-PRIORITIZE: Routine cyberattacks, malware, phishing alerts, standard ransomware incidents, petty data privacy fines, municipal IT downtime, or bureaucratic court battles. If candidates contain both routine incident alerts and technical/gaming/developer innovation, you MUST choose the technical/gaming/developer innovation! Readers want inspiration, cutting-edge technology, and developer/gaming excitement!
 
 CRITICAL ANTI-HALLUCINATION & FACTUALITY RULES (STRICT ZERO-HALLUCINATION POLICY):
 1. ZERO HALLUCINATIONS: Every fact, company name, technical detail, and quote in your news summary MUST be strictly grounded in the provided article content.
@@ -549,7 +549,7 @@ Return ONLY valid JSON:
 
     # 2. Fallback to Groq API if Gemini is unavailable or fails
     if config.GROQ_API_KEY:
-        models_to_try = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+        models_to_try = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {config.GROQ_API_KEY}",

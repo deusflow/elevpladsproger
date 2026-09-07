@@ -149,6 +149,10 @@ TARGET_KEYWORD_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, TARGET_KE
 
 # RSS Feeds for Danish IT, Gaming & Tech Innovations
 RSS_FEEDS = {
+    "80.lv Game & 3D Tech": "https://80.lv/feed/",
+    "Eurogamer News": "https://www.eurogamer.net/feed/news",
+    "GitHub Engineering": "https://github.blog/feed/",
+    "Hacker News Tech": "https://hnrss.org/best",
     "Gamereactor Gaming": "https://www.gamereactor.dk/rss/rss.php",
     "Games Denmark": "https://gamesdenmark.dk/feed",
     "Pixel.tv Gaming": "https://pixel.tv/feed/",

@@ -22,22 +22,26 @@ FALLBACK_FILE = "jobs_db_fallback.json"
 # Maximum Telegram message length (with safety margin)
 TELEGRAM_MAX_LEN = 4000
 
-async def load_state() -> dict[str, Any]:
-    state: dict[str, Any] = {"jobs": [], "company_hashes": {}}
+async def load_state(state_key: str = "jobs_state") -> dict[str, Any]:
+    state: dict[str, Any] = {"jobs": [], "company_hashes": {}} if state_key == "jobs_state" else {"seen_news": [], "posted_news": []}
     
-    # Check if we have an un-synced fallback file from a previous failed run
+    fallback_file = f"{state_key}_fallback.json"
+    legacy_fallback = FALLBACK_FILE
+    
+    # Check for un-synced fallback file from a previous failed run
     fallback_state: Optional[dict[str, Any]] = None
-    if os.path.exists(FALLBACK_FILE):
+    file_to_check = fallback_file if os.path.exists(fallback_file) else (legacy_fallback if os.path.exists(legacy_fallback) else None)
+    if file_to_check:
         try:
-            with open(FALLBACK_FILE, "r", encoding="utf-8") as f:
+            with open(file_to_check, "r", encoding="utf-8") as f:
                 fallback_state = json.load(f)
-                logger.info("Found un-synced local emergency state backup.")
+                logger.info(f"Found un-synced local emergency state backup from {file_to_check}.")
         except Exception as fe:
             logger.error(f"Error loading fallback file: {fe}")
 
     # Try Supabase first
     if SUPABASE_URL and SUPABASE_KEY:
-        url = f"{SUPABASE_URL}/rest/v1/state?key=eq.scraper_state&select=value"
+        url = f"{SUPABASE_URL}/rest/v1/state?key=eq.{state_key}&select=value"
         headers = {
             "apikey": SUPABASE_KEY,
             "Authorization": f"Bearer {SUPABASE_KEY}"
@@ -48,35 +52,66 @@ async def load_state() -> dict[str, Any]:
                     resp = await client.get(url, headers=headers, timeout=10.0)
                     if resp.status_code == 200:
                         data = resp.json()
-                        if data and isinstance(data, list):
+                        if data and isinstance(data, list) and len(data) > 0:
                             loaded = data[0].get("value", {})
-                            if isinstance(loaded, dict) and "jobs" in loaded:
+                            if isinstance(loaded, dict):
                                 state = loaded
-                            elif isinstance(loaded, list):
+                            elif isinstance(loaded, list) and state_key == "jobs_state":
                                 state["jobs"] = loaded
-                            
-                            # Track state version for optimistic locking
                             state.setdefault("_version", 0)
-                        
+                        else:
+                            # If state_key is new (e.g. first run with jobs_state or news_state),
+                            # smoothly migrate legacy state from scraper_state!
+                            logger.info(f"Key '{state_key}' not found in Supabase. Attempting migration from legacy 'scraper_state'...")
+                            legacy_resp = await client.get(f"{SUPABASE_URL}/rest/v1/state?key=eq.scraper_state&select=value", headers=headers, timeout=10.0)
+                            if legacy_resp.status_code == 200:
+                                legacy_data = legacy_resp.json()
+                                if legacy_data and isinstance(legacy_data, list) and len(legacy_data) > 0:
+                                    legacy_loaded = legacy_data[0].get("value", {})
+                                    if isinstance(legacy_loaded, dict):
+                                        if state_key == "jobs_state":
+                                            state = {
+                                                "jobs": legacy_loaded.get("jobs", []),
+                                                "company_hashes": legacy_loaded.get("company_hashes", {}),
+                                                "cvr_cache": legacy_loaded.get("cvr_cache", {}),
+                                                "dynamic_companies": legacy_loaded.get("dynamic_companies", []),
+                                                "predictions_sent": legacy_loaded.get("predictions_sent", {}),
+                                                "last_heartbeat_date": legacy_loaded.get("last_heartbeat_date"),
+                                                "scraper_failures": legacy_loaded.get("scraper_failures", {}),
+                                                "notified_scraper_failures": legacy_loaded.get("notified_scraper_failures", {}),
+                                                "restructuring_companies": legacy_loaded.get("restructuring_companies", []),
+                                                "_version": 0
+                                            }
+                                        elif state_key == "news_state":
+                                            state = {
+                                                "seen_news": legacy_loaded.get("seen_news", []),
+                                                "posted_news": legacy_loaded.get("posted_news", []),
+                                                "tip_history": legacy_loaded.get("tip_history", {}),
+                                                "feed_failures": legacy_loaded.get("feed_failures", {}),
+                                                "notified_feed_failures": legacy_loaded.get("notified_feed_failures", {}),
+                                                "recent_layoff_alerts": legacy_loaded.get("recent_layoff_alerts", {}),
+                                                "restructuring_companies": legacy_loaded.get("restructuring_companies", []),
+                                                "_version": 0
+                                            }
+                                        logger.info(f"Successfully migrated legacy state into '{state_key}'.")
+
                         # Merge fallback state if existed
                         if fallback_state:
-                            logger.info("Merging local fallback state into Supabase state...")
-                            existing_job_ids = {j["job_id"] for j in state.get("jobs", []) if "job_id" in j}
-                            existing_urls = {j["url"] for j in state.get("jobs", []) if "url" in j}
-                            if "jobs" not in state:
-                                state["jobs"] = []
-                            jobs_list = state["jobs"]
-                            if isinstance(jobs_list, list):
+                            logger.info(f"Merging local fallback state into {state_key}...")
+                            if state_key == "jobs_state":
+                                existing_job_ids = {j["job_id"] for j in state.get("jobs", []) if "job_id" in j}
+                                existing_urls = {j["url"] for j in state.get("jobs", []) if "url" in j}
+                                jobs_list = state.setdefault("jobs", [])
                                 for fj in fallback_state.get("jobs", []):
                                     if fj.get("job_id") not in existing_job_ids and fj.get("url") not in existing_urls:
                                         jobs_list.append(fj)
-                                        
-                            if "company_hashes" not in state:
-                                state["company_hashes"] = {}
-                            hashes = state["company_hashes"]
-                            if isinstance(hashes, dict):
-                                hashes.update(fallback_state.get("company_hashes", {}))
-                            
+                                state.setdefault("company_hashes", {}).update(fallback_state.get("company_hashes", {}))
+                            elif state_key == "news_state":
+                                existing_links = {n["link"] for n in state.get("seen_news", []) if "link" in n}
+                                seen_list = state.setdefault("seen_news", [])
+                                for fn in fallback_state.get("seen_news", []):
+                                    if fn.get("link") not in existing_links:
+                                        seen_list.append(fn)
                         return state
                     else:
                         logger.warning(f"Supabase load attempt {attempt}/3 status {resp.status_code}")
@@ -86,28 +121,27 @@ async def load_state() -> dict[str, Any]:
                 await asyncio.sleep((2 ** attempt) + random.uniform(0, 1))
                 
             if fallback_state:
-                logger.warning("Supabase load failed completely. Recovering state from local fallback file.")
+                logger.warning(f"Supabase load failed completely. Recovering {state_key} from local fallback file.")
                 return fallback_state
 
-            logger.error("Supabase load failed and no fallback file found. Returning empty state.")
+            logger.error(f"Supabase load failed and no fallback file found for {state_key}. Returning empty state.")
             return state
                 
-    # Fallback to local DB_FILE only if Supabase is not configured
-    elif os.path.exists(DB_FILE):
+    # Fallback to local file only if Supabase is not configured
+    local_file = f"{state_key}.json" if state_key != "jobs_state" else DB_FILE
+    if os.path.exists(local_file):
         try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
+            with open(local_file, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
-                if isinstance(loaded, dict) and "jobs" in loaded:
+                if isinstance(loaded, dict):
                     state = loaded
-                elif isinstance(loaded, list):
-                    state["jobs"] = loaded
         except Exception as e:
             logger.error(f"Error loading local state: {e}")
             
     return state
 
-async def save_state(state: dict):
-    # Try Supabase with up to 3 retries
+async def save_state(state: dict, state_key: str = "jobs_state"):
+    fallback_file = f"{state_key}_fallback.json"
     if SUPABASE_URL and SUPABASE_KEY:
         url = f"{SUPABASE_URL}/rest/v1/state"
         headers = {
@@ -119,54 +153,56 @@ async def save_state(state: dict):
         async with httpx.AsyncClient() as client:
             # Check version for strict optimistic locking before UPSERT
             try:
-                check_resp = await client.get(f"{SUPABASE_URL}/rest/v1/state?key=eq.scraper_state&select=value", headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=10.0)
+                check_resp = await client.get(f"{SUPABASE_URL}/rest/v1/state?key=eq.{state_key}&select=value", headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}, timeout=10.0)
                 if check_resp.status_code == 200:
                     data = check_resp.json()
-                    if data and isinstance(data, list):
+                    if data and isinstance(data, list) and len(data) > 0:
                         db_state = data[0].get("value", {})
                         if isinstance(db_state, dict):
                             db_version = db_state.get("_version", 0)
                             current_version = state.get("_version", 0)
                             if db_version > current_version:
-                                logger.error(f"Optimistic locking failed! DB version {db_version} > our version {current_version}. Aborting save to prevent data loss.")
+                                logger.error(f"Optimistic locking failed on {state_key}! DB version {db_version} > our version {current_version}. Aborting save to prevent data loss.")
                                 return
             except Exception as e:
-                logger.warning(f"Could not verify state version: {e}")
+                logger.warning(f"Could not verify {state_key} version: {e}")
                 
             for attempt in range(1, 4):
                 try:
                     # Increment version for optimistic locking
                     state["_version"] = state.get("_version", 0) + 1
                     state["_last_saved"] = datetime.now(timezone.utc).isoformat()
-                    resp = await client.post(url, headers=headers, json={"key": "scraper_state", "value": state}, timeout=10.0)
+                    resp = await client.post(url, headers=headers, json={"key": state_key, "value": state}, timeout=10.0)
                     if resp.status_code in [200, 201, 204]:
-                        logger.info("Saved state to Supabase via UPSERT.")
-                        if os.path.exists(FALLBACK_FILE):
-                            try:
-                                os.remove(FALLBACK_FILE)
-                            except OSError:
-                                pass
+                        logger.info(f"Saved state to Supabase for key '{state_key}' via UPSERT.")
+                        for fpath in [fallback_file, FALLBACK_FILE]:
+                            if os.path.exists(fpath):
+                                try:
+                                    os.remove(fpath)
+                                except OSError:
+                                    pass
                         return
                     else:
-                        logger.warning(f"Supabase save attempt {attempt}/3 failed (status {resp.status_code}): {resp.text}")
+                        logger.warning(f"Supabase save attempt {attempt}/3 failed on {state_key} (status {resp.status_code}): {resp.text}")
                 except Exception as e:
-                    logger.warning(f"Supabase save attempt {attempt}/3 exception: {e}")
+                    logger.warning(f"Supabase save attempt {attempt}/3 exception on {state_key}: {e}")
                 
                 await asyncio.sleep((2 ** attempt) + random.uniform(0, 1))
                 
         # If all retries failed, save emergency local backup
-        logger.error("All Supabase save attempts failed. Writing state to local emergency backup file.")
+        logger.error(f"All Supabase save attempts failed for {state_key}. Writing to emergency backup file.")
         try:
-            with open(FALLBACK_FILE, "w", encoding="utf-8") as f:
+            with open(fallback_file, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2, ensure_ascii=False)
         except Exception as fe:
             logger.error(f"Failed to write emergency fallback file: {fe}")
         return
                 
     # Fallback to local only when Supabase is NOT configured
-    with open(DB_FILE, "w", encoding="utf-8") as f:
+    local_file = f"{state_key}.json" if state_key != "jobs_state" else DB_FILE
+    with open(local_file, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
-    logger.info("Saved state to local file.")
+    logger.info(f"Saved {state_key} to local file {local_file}.")
 
 
 def escape_html(text: str) -> str:
@@ -379,9 +415,9 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
                 draft_chunks = split_telegram_html(f"<code>{escaped_draft}</code>", max_chunk_size=3400)
                 for idx, chunk in enumerate(draft_chunks, 1):
                     header = f"📝 <b>Udkast til ansøgning (Del {idx}/{len(draft_chunks)})</b>\n🏢 {company} - {title}\n\n"
-                    messages.append(header + chunk)
+                    messages.append(f"{header}<blockquote expandable>{chunk}</blockquote>")
             else:
-                draft_msg = f"📝 <b>Udkast til ansøgning</b>\n🏢 {company} - {title}\n\n<code>{escaped_draft}</code>"
+                draft_msg = f"📝 <b>Udkast til ansøgning</b>\n🏢 {company} - {title}\n\n<blockquote expandable><code>{escaped_draft}</code></blockquote>"
                 messages.append(draft_msg)
 
     # Build company change notifications in HTML format
@@ -428,7 +464,8 @@ async def main():
     now = datetime.now(timezone.utc)
     now_ts = now.timestamp()  # BUG-4 fix: numeric timestamp for layoff comparisons
 
-    state = await load_state()
+    state_key = "jobs_state" if mode == 'jobs' else ("news_state" if mode == 'news' else "scraper_state")
+    state = await load_state(state_key=state_key)
     state_updated = False
     
     # Synchronize persistent CVR validation cache
@@ -438,7 +475,7 @@ async def main():
         old_jobs_list = state.get("jobs", [])
         old_company_hashes = state.get("company_hashes", {})
         
-        old_jobs = {item["job_id"]: item for item in old_jobs_list}
+        old_jobs = {item["job_id"]: item for item in old_jobs_list if isinstance(item, dict) and "job_id" in item}
         
         for jid, jdata in old_jobs.items():
             try:
@@ -453,9 +490,18 @@ async def main():
         
         all_items = []
 
-        # API Scrapers
-        all_items.extend(await scrapers.scrape_thehub())
-        all_items.extend(await scrapers.scrape_elevplads())
+        # API Scrapers (fast concurrent HTTP requests without launching Chromium)
+        api_results = await asyncio.gather(
+            scrapers.scrape_thehub(),
+            scrapers.scrape_elevplads(),
+            scrapers.scrape_linkedin(),
+            return_exceptions=True
+        )
+        for res in api_results:
+            if isinstance(res, Exception):
+                logger.error(f"API Scraper failed with exception: {res}")
+            elif isinstance(res, list):
+                all_items.extend(res)
 
         # Browser Scrapers
         async with async_playwright() as p:
@@ -504,21 +550,20 @@ async def main():
                                 existing_dynamic.append(dc)
                         state["dynamic_companies"] = existing_dynamic
                         state["last_proff_scrape"] = now_dt.isoformat()
-                        await save_state(state)
+                        await save_state(state, state_key=state_key)
                 
                 dynamic_companies = [
                     c for c in state.get("dynamic_companies", [])
                     if c.get("url") and c["url"].strip().startswith("http")
                 ]
 
-                # Run all scrapers in parallel
+                # Run all browser-based scrapers in parallel
                 tasks = [
                     run_scraper(scrapers.scrape_laerepladsen, context),
                     run_scraper(scrapers.scrape_jobnet, context),
                     run_scraper(scrapers.scrape_jobindex, context),
                     run_scraper(scrapers.scrape_itjobbank, context),
                     run_scraper(scrapers.scrape_techjob, context),
-                    run_scraper(scrapers.scrape_linkedin, context),
                     company_scrapers.scrape_custom_companies(context, dynamic_companies)
                 ]
                 
@@ -596,11 +641,13 @@ async def main():
                 # A job is new if it's not currently active and its title is not active in this run
                 if job_id not in active_ids and dedup_key not in seen_active_titles:
                     item["discovered_at"] = datetime.now(timezone.utc).isoformat()
+                    item["last_seen_at"] = datetime.now(timezone.utc).isoformat()
                     item["status"] = "active"
                     new_jobs.append(item)
+                    old_jobs[job_id] = item
                     active_ids.add(job_id)
                     seen_active_titles.add(dedup_key)
-                elif job_id in active_ids:
+                elif job_id in old_jobs:
                     # Update heartbeat timestamp of active job
                     old_jobs[job_id]["last_seen_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -614,6 +661,18 @@ async def main():
         cycle_alerts = cycle_predictor.analyze_and_predict(state)
         
         active_restructuring = state.get("restructuring_companies", [])
+        if mode == 'jobs':
+            try:
+                news_state = await load_state(state_key="news_state")
+                news_restructuring = news_state.get("restructuring_companies", [])
+                if news_restructuring:
+                    merged_restructuring = list(set(active_restructuring + news_restructuring))
+                    if merged_restructuring != active_restructuring:
+                        active_restructuring = merged_restructuring
+                        state["restructuring_companies"] = active_restructuring
+                        state_updated = True
+            except Exception as e:
+                logger.warning(f"Could not load restructuring companies from news_state: {e}")
         
         # Check if we should send a reassuring daily morning heartbeat when 0 new jobs found
         today_str = now.strftime("%Y-%m-%d")
@@ -712,7 +771,7 @@ async def main():
         state_updated = True
 
     if state_updated:
-        await save_state(state)
+        await save_state(state, state_key=state_key)
 
 if __name__ == "__main__":
     asyncio.run(main())
