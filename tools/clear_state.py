@@ -13,26 +13,25 @@ async def clear_supabase_state():
         print("Ошибка: SUPABASE_URL или SUPABASE_KEY не найдены в переменных окружения.")
         return
 
-    url = f"{SUPABASE_URL}/rest/v1/state?key=eq.scraper_state"
+    state_keys = ["jobs_state", "news_state", "scraper_state"]
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}"
     }
 
     print(f"Подключение к Supabase: {SUPABASE_URL}")
-    print("Удаление ключа 'scraper_state'...")
 
     async with httpx.AsyncClient() as client:
-        # Отправляем DELETE запрос
-        resp = await client.delete(url, headers=headers)
-        
-        if resp.status_code in [200, 204]:
-            print("✅ Состояние (scraper_state) успешно удалено из Supabase!")
-        else:
-            print(f"❌ Ошибка при удалении: {resp.status_code} - {resp.text}")
+        for key in state_keys:
+            url = f"{SUPABASE_URL}/rest/v1/state?key=eq.{key}"
+            resp = await client.delete(url, headers=headers)
+            if resp.status_code in [200, 204]:
+                print(f"✅ Ключ '{key}' успешно удален из Supabase!")
+            else:
+                print(f"⚠️ Ошибка при удалении '{key}': {resp.status_code} - {resp.text}")
             
     # Также очищаем локальные fallback-файлы, если они есть
-    for file in ["jobs_db.json", "jobs_db_fallback.json"]:
+    for file in ["jobs_db.json", "jobs_db_fallback.json", "jobs_state_fallback.json", "news_state_fallback.json"]:
         if os.path.exists(file):
             os.remove(file)
             print(f"🗑 Удален локальный кэш: {file}")

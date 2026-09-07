@@ -432,49 +432,53 @@ async def scrape_elevplads() -> list[dict]:
     if config.PROXY_URL:
         client_kwargs["proxy"] = config.PROXY_URL
         
-    async with httpx.AsyncClient(**client_kwargs) as client:
-        for q in config.JOB_QUERIES:
-            try:
-                logger.info(f"Scraping Elevplads.dk for '{q}'...")
-                api_url = "https://elevplads.dk/api/posts/get-vacancies"
-                params: dict[str, str | int] = {
-                    "query": q,
-                    "future_only": "false",
-                    "page": 1,
-                    "sort": "recommended"
-                }
-                resp = await client.get(api_url, params=params, headers=headers)
-                if resp.status_code != 200:
-                    logger.warning(f"Elevplads.dk API returned {resp.status_code} for query '{q}'")
-                    continue
+    try:
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            for q in config.JOB_QUERIES:
+                try:
+                    logger.info(f"Scraping Elevplads.dk for '{q}'...")
+                    api_url = "https://elevplads.dk/api/posts/get-vacancies"
+                    params: dict[str, str | int] = {
+                        "query": q,
+                        "future_only": "false",
+                        "page": 1,
+                        "sort": "recommended"
+                    }
+                    resp = await client.get(api_url, params=params, headers=headers)
+                    if resp.status_code != 200:
+                        logger.warning(f"Elevplads.dk API returned {resp.status_code} for query '{q}'")
+                        continue
+                        
+                    data = resp.json()
+                    posts = data.get("posts", [])
+                    logger.info(f"Elevplads.dk returned {len(posts)} posts for query '{q}'")
                     
-                data = resp.json()
-                posts = data.get("posts", [])
-                logger.info(f"Elevplads.dk returned {len(posts)} posts for query '{q}'")
-                
-                for post in posts:
-                    title = post.get("title", "")
-                    company = post.get("company_name", "") or "Ukendt"
-                    location = post.get("working_place", "")
-                    job_id = str(post.get("id", ""))
-                    link = post.get("link", "")
-                    url = f"https://elevplads.dk{link}" if link else "https://elevplads.dk/find-elevplads"
+                    for post in posts:
+                        title = post.get("title", "")
+                        company = post.get("company_name", "") or "Ukendt"
+                        location = post.get("working_place", "")
+                        job_id = str(post.get("id", ""))
+                        link = post.get("link", "")
+                        url = f"https://elevplads.dk{link}" if link else "https://elevplads.dk/find-elevplads"
+                        
+                        postal_match = re.search(r'\b(\d{4})\b', location)
+                        postal = postal_match.group(1) if postal_match else ""
+                        
+                        if is_valid_job(title, postal, company, location):
+                            jobs.append(format_job(
+                                job_id=job_id,
+                                title=title,
+                                company=company,
+                                url=url,
+                                source="Elevplads"
+                            ))
+                except Exception as e:
+                    logger.error(f"Error in elevplads scraper for query '{q}': {e}")
                     
-                    postal_match = re.search(r'\b(\d{4})\b', location)
-                    postal = postal_match.group(1) if postal_match else ""
-                    
-                    if is_valid_job(title, postal, company, location):
-                        jobs.append(format_job(
-                            job_id=job_id,
-                            title=title,
-                            company=company,
-                            url=url,
-                            source="Elevplads"
-                        ))
-            except Exception as e:
-                logger.error(f"Error in elevplads scraper for query '{q}': {e}")
-                
-    return jobs
+        return jobs
+    except Exception as e:
+        logger.error(f"Error in Elevplads scraper: {e}")
+        return [{"type": "scraper_error", "source": "Elevplads", "error": str(e)}]
 
 @with_error_screenshot("TechJob")
 async def scrape_techjob(page: Page) -> list[dict]:
