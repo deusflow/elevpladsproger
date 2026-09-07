@@ -4,8 +4,15 @@ import asyncio
 import os
 import re
 import hashlib
-import httpx
-from patchright.async_api import BrowserContext, Page
+from typing import Optional, Any
+try:
+    from patchright.async_api import BrowserContext, Page
+except ImportError:
+    try:
+        from playwright.async_api import BrowserContext, Page  # type: ignore
+    except ImportError:
+        BrowserContext = Any  # type: ignore
+        Page = Any  # type: ignore
 import config
 from scrapers import format_job, is_valid_job
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -85,50 +92,55 @@ Page Text:
         "Authorization": f"Bearer {config.GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "model": "openai/gpt-oss-120b",
-        "messages": [
-            {"role": "system", "content": "You are a precise JSON job extractor."},
-            {"role": "user", "content": prompt}
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.1
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            for attempt in range(2):
-                resp = await client.post(url, headers=headers, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    content = data["choices"][0]["message"]["content"]
-                    result = json.loads(content)
-                    raw_jobs = result.get("jobs", [])
-                    extracted = []
-                    for j in raw_jobs:
-                        title = j.get("title", "").strip()
-                        job_url = j.get("url", "").strip() or page_url
-                        if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
-                            extracted.append({
-                                "title": title,
-                                "url": job_url
-                            })
-                    if extracted:
-                        logger.info(f"Groq LLM extracted {len(extracted)} IT elev jobs for {company_name}")
-                    return extracted, True
-                elif resp.status_code == 429 and attempt == 0:
-                    logger.warning(f"Groq 429 rate limit hit for {company_name}, retrying in 3s...")
-                    await asyncio.sleep(3.0)
-                else:
-                    logger.warning(f"Groq API error {resp.status_code}: {resp.text}")
-    except Exception as e:
-        logger.error(f"Error invoking Groq LLM for {company_name}: {e}")
+    for model_id in ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]:
+        payload = {
+            "model": model_id,
+            "messages": [
+                {"role": "system", "content": "You are a precise JSON job extractor."},
+                {"role": "user", "content": prompt}
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                for attempt in range(2):
+                    resp = await client.post(url, headers=headers, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        content = data["choices"][0]["message"]["content"]
+                        result = json.loads(content)
+                        raw_jobs = result.get("jobs", [])
+                        extracted = []
+                        for j in raw_jobs:
+                            title = j.get("title", "").strip()
+                            job_url = j.get("url", "").strip() or page_url
+                            if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
+                                extracted.append({
+                                    "title": title,
+                                    "url": job_url
+                                })
+                        if extracted:
+                            logger.info(f"Groq LLM ({model_id}) extracted {len(extracted)} IT elev jobs for {company_name}")
+                        return extracted, True
+                    elif resp.status_code == 429 and attempt == 0:
+                        logger.warning(f"Groq 429 rate limit hit for {company_name} on {model_id}, retrying in 2s...")
+                        await asyncio.sleep(2.0)
+                    else:
+                        logger.warning(f"Groq API error {resp.status_code} on {model_id}: {resp.text}")
+                        break
+        except Exception as e:
+            logger.error(f"Error invoking Groq LLM ({model_id}) for {company_name}: {e}")
         
     return [], False
 
 @retry(stop=stop_after_attempt(2), wait=wait_fixed(2))
 async def _do_scrape_company(page: Page, url: str):
     response = await page.goto(url, wait_until="domcontentloaded", timeout=25000)
+    if response and response.status in [404, 410]:
+        logger.warning(f"Company career page permanently unavailable ({response.status}) at {url}")
+        return [], "", ""
     if response and response.status >= 400:
         raise Exception(f"HTTP {response.status} returned for {url}")
     await page.wait_for_load_state("domcontentloaded")
@@ -175,7 +187,10 @@ async def try_teamtailor_api(company_name: str, base_url: str) -> list[dict]:
         
     for api_url in api_candidates:
         try:
-            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            client_kwargs: dict[str, Any] = {"timeout": 8.0, "follow_redirects": True}
+            if getattr(config, "PROXY_URL", None):
+                client_kwargs["proxy"] = config.PROXY_URL
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 resp = await client.get(api_url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
                 if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
                     data = resp.json()
@@ -302,8 +317,10 @@ async def scrape_custom_companies(context: BrowserContext, dynamic_companies: Op
     tasks = [scrape_company(context, company, sem) for company in companies]
     results = await asyncio.gather(*tasks)
     
+    all_jobs = []
     for sublist in results:
-        jobs.extend(sublist)
+        if isinstance(sublist, list):
+            all_jobs.extend(sublist)
         
-    return jobs
+    return all_jobs
 

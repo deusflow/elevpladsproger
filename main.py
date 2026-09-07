@@ -477,16 +477,22 @@ async def main():
         
         old_jobs = {item["job_id"]: item for item in old_jobs_list if isinstance(item, dict) and "job_id" in item}
         
+        pruned_old_jobs = {}
         for jid, jdata in old_jobs.items():
             try:
                 discovered = datetime.fromisoformat(jdata.get("discovered_at", now.isoformat()))
+                if (now - discovered).days >= 60 and jdata.get("status") == "expired":
+                    continue  # Safely prune jobs that have been expired for over a month
                 if (now - discovered).days >= 30:
                     jdata["status"] = "expired"
                 else:
                     if "status" not in jdata:
                         jdata["status"] = "active"
+                pruned_old_jobs[jid] = jdata
             except ValueError:
                 jdata["status"] = "active"
+                pruned_old_jobs[jid] = jdata
+        old_jobs = pruned_old_jobs
         
         all_items = []
 
@@ -550,6 +556,11 @@ async def main():
                                 existing_dynamic.append(dc)
                         state["dynamic_companies"] = existing_dynamic
                         state["last_proff_scrape"] = now_dt.isoformat()
+                        await save_state(state, state_key=state_key)
+                    else:
+                        # If Proff discovery yielded 0 or failed, back off for 24h instead of retrying on every subsequent run
+                        from datetime import timedelta
+                        state["last_proff_scrape"] = (now_dt - timedelta(days=6)).isoformat()
                         await save_state(state, state_key=state_key)
                 
                 dynamic_companies = [

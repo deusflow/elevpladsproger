@@ -585,6 +585,7 @@ async def scrape_linkedin() -> list[dict]:
                             ))
                 except Exception as e:
                     logger.warning(f"Error querying LinkedIn for '{q}': {e}")
+                await asyncio.sleep(0.5)
         return jobs
     except Exception as e:
         logger.error(f"Error in LinkedIn scraper: {e}")

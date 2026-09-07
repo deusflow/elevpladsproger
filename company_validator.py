@@ -66,11 +66,22 @@ def get_validation_cache() -> dict[str, bool]:
 def is_known_approved_company(company_name: str) -> bool:
     """Checks if company is a verified target employer or public entity without network calls."""
     normalized = company_name.lower().strip()
+    if any(pattern in normalized for pattern in PUBLIC_SECTOR_PATTERNS):
+        return True
+
     known = _get_known_target_companies()
     if normalized in known:
         return True
-    if any(pattern in normalized for pattern in PUBLIC_SECTOR_PATTERNS):
-        return True
+
+    # Match common variants (e.g. "Lego System A/S" for "Lego Group", "Vestas Wind Systems" for "Vestas")
+    for k in known:
+        # Extract base name without legal suffixes
+        base_k = k.split()[0] if k else ""
+        if len(base_k) >= 4 and base_k in normalized:
+            return True
+        if len(k) >= 4 and (k in normalized or normalized in k):
+            return True
+
     return False
 
 
@@ -117,15 +128,18 @@ async def check_accreditation(company_name: str) -> bool:
         for attempt in range(1, 3):
             try:
                 _last_cvr_call_ts = time.time()
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(search_url, headers=headers, timeout=10.0)
+                client_kwargs: dict = {"timeout": 10.0}
+                if getattr(config, "PROXY_URL", None):
+                    client_kwargs["proxy"] = config.PROXY_URL
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    response = await client.get(search_url, headers=headers)
 
                     if response.status_code == 200:
                         data = response.json()
                         if not data.get("error"):
-                            industry_code = data.get("industrycode", 0)
-                            # IT industry code starts with 62, or large company with >10 employees
-                            is_approved = str(industry_code).startswith("62") or data.get("employees", 0) > 10
+                            # Danish DB07 IT industry codes: 58 (software/games), 61 (telecom), 62 (IT programming/consulting), 63 (hosting/web portals)
+                            code_str = str(industry_code).strip()
+                            is_approved = any(code_str.startswith(prefix) for prefix in ("58", "61", "62", "63")) or data.get("employees", 0) > 10
                             VALIDATION_CACHE[normalized] = is_approved
                             return is_approved
                         else:

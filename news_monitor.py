@@ -170,7 +170,10 @@ async def fetch_rss(url: str, source_name: str = "") -> tuple[list[dict], bool]:
         "Accept": "application/rss+xml, application/rdf+xml, application/atom+xml, application/xml, text/xml, */*"
     }
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        client_kwargs: dict[str, Any] = {"timeout": 15.0, "follow_redirects": True}
+        if getattr(config, "PROXY_URL", None):
+            client_kwargs["proxy"] = config.PROXY_URL
+        async with httpx.AsyncClient(**client_kwargs) as client:
             resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 feed = await asyncio.to_thread(feedparser.parse, resp.content)
@@ -610,7 +613,8 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     raw_seen = state.get("seen_news", [])
     posted_news = state.get("posted_news", [])
     
-    current_time = datetime.now().timestamp()
+    from datetime import timezone
+    current_time = datetime.now(timezone.utc).timestamp()
     seen_news: list[dict[str, Any]] = []
     
     # Normalize legacy string-based seen_news and enforce 10-day retention
@@ -772,6 +776,8 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         if s["link"] not in seen_links:
             seen_links.add(s["link"])
             final_seen.append(s)
+
+    final_seen = final_seen[-600:]
 
     return {
         "restructuring_companies": list(set(restructuring_comps)),

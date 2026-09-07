@@ -117,28 +117,29 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
             "Authorization": f"Bearer {config.GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
-        payload = {
-            "model": "openai/gpt-oss-120b",
-            "messages": [
-                {"role": "system", "content": "You are a JSON-only job evaluator. Return ONLY valid JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1
-        }
+        for model_id in ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]:
+            payload = {
+                "model": model_id,
+                "messages": [
+                    {"role": "system", "content": "You are a JSON-only job evaluator. Return ONLY valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.1
+            }
+            
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(groq_url, headers=headers, json=payload)
+                    if resp.status_code == 200:
+                        content = resp.json()["choices"][0]["message"]["content"]
+                        return extract_json_payload(content)
+                    else:
+                        logger.warning(f"Groq API scoring error {resp.status_code} on {model_id}: {resp.text}")
+            except Exception as e:
+                logger.error(f"Groq API exception during scoring ({model_id}): {e}")
         
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(groq_url, headers=headers, json=payload)
-                if resp.status_code == 200:
-                    content = resp.json()["choices"][0]["message"]["content"]
-                    return extract_json_payload(content)
-                else:
-                    logger.warning(f"Groq API scoring error {resp.status_code}: {resp.text}")
-        except Exception as e:
-            logger.error(f"Groq API exception during scoring: {e}")
-    
-    return {}
+        return {}
     
 async def enrich_jobs_with_ai(new_jobs: list[dict]):
     """Fetch text and score each new job asynchronously."""

@@ -1,7 +1,17 @@
 import asyncio
 import logging
-from patchright.async_api import BrowserContext
-from playwright_stealth import stealth_async
+from typing import Any
+try:
+    from playwright_stealth import stealth_async
+except ImportError:
+    async def stealth_async(page): pass
+try:
+    from patchright.async_api import BrowserContext
+except ImportError:
+    try:
+        from playwright.async_api import BrowserContext  # type: ignore
+    except ImportError:
+        BrowserContext = Any  # type: ignore
 
 logger = logging.getLogger("elevplads_scraper")
 
@@ -22,8 +32,8 @@ async def discover_it_companies(context: BrowserContext) -> list[dict]:
         search_url = "https://www.proff.dk/s%C3%B8g?q=IT-konsulent+Midtjylland"
         
         logger.info("Crawling Proff.dk for dynamic company discovery...")
-        await page.goto(search_url, wait_until="networkidle", timeout=30000)
-        await page.wait_for_timeout(3000)
+        await page.goto(search_url, wait_until="domcontentloaded", timeout=25000)
+        await page.wait_for_timeout(2000)
         
         # Extract company names, profile links, and direct website URLs from search results
         links_data = await page.evaluate("""() => {
