@@ -14,7 +14,7 @@ import proff_scraper
 
 import scrapers
 import company_scrapers
-from config import DB_FILE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, PROXY_URL, SUPABASE_URL, SUPABASE_KEY, logger
+from config import DB_FILE, PROXY_URL, SUPABASE_URL, SUPABASE_KEY, logger
 import config
 
 FALLBACK_FILE = "jobs_db_fallback.json"
@@ -288,7 +288,7 @@ async def _send_single_telegram_message(client: httpx.AsyncClient, text: str, pa
         "chat_id": config.TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": parse_mode,
-        "disable_web_page_preview": True
+        "link_preview_options": {"is_disabled": True}
     }
 
     for attempt in range(1, 4):
@@ -520,11 +520,11 @@ async def main():
                 
             browser = await p.chromium.launch(**browser_args)
             USER_AGENTS = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/19.4 Safari/605.1.15",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0"
             ]
             try:
                 context = await browser.new_context(
@@ -690,9 +690,15 @@ async def main():
         last_heartbeat = state.get("last_heartbeat_date")
         if not new_jobs and not changed_companies and not cycle_alerts and now.hour < 12 and last_heartbeat != today_str:
             active_count = len([j for j in old_jobs.values() if j.get("status") == "active"])
+            total_custom_sites = len(dynamic_companies)
+            try:
+                with open("target_companies.json", "r", encoding="utf-8") as f:
+                    total_custom_sites += len(json.load(f))
+            except Exception:
+                total_custom_sites = 58
             heartbeat_msg = (
                 f"🔍 <b>Elevplads Monitor Status</b>\n"
-                f"Проверено 8 бирж (Lærepladsen, Jobnet, Jobindex, IT-Jobbank, TheHub, Elevplads, TechJob, LinkedIn) и 53 карьерных сайта.\n"
+                f"Проверено 8 бирж (Lærepladsen, Jobnet, Jobindex, IT-Jobbank, TheHub, Elevplads, TechJob, LinkedIn) и {total_custom_sites} карьерных сайтов.\n"
                 f"Новых elevplads за утро не найдено. Активных позиций в базе: {active_count}."
             )
             await notify_telegram([], [], [], heartbeat_msg, [])

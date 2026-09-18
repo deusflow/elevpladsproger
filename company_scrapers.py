@@ -5,6 +5,7 @@ import os
 import re
 import hashlib
 from typing import Optional, Any
+import httpx
 try:
     from patchright.async_api import BrowserContext, Page
 except ImportError:
@@ -16,8 +17,10 @@ except ImportError:
 import config
 from scrapers import format_job, is_valid_job
 from tenacity import retry, stop_after_attempt, wait_fixed
-from playwright_stealth import stealth_async
-from typing import Optional
+try:
+    from playwright_stealth import stealth_async
+except ImportError:
+    async def stealth_async(page): pass
 
 logger = logging.getLogger("elevplads_scraper")
 

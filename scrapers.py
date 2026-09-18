@@ -6,6 +6,7 @@ import urllib.parse
 from typing import Any, Optional
 import hashlib
 from datetime import datetime, timezone
+import httpx
 try:
     from patchright.async_api import Page
 except ImportError:
@@ -535,7 +536,7 @@ async def scrape_linkedin() -> list[dict]:
     queries = ["datatekniker", "it elev", "software elev", "elev programmering", "lærling it", "trainee software", "it-lærling"]
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
         "Accept-Language": "da-DK,da;q=0.9,en-US;q=0.8,en;q=0.7"
     }
     

@@ -4,7 +4,7 @@ Verify the new topic-fingerprint dedup system catches all duplicates.
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from news_monitor import is_topic_duplicate, get_topic_fingerprint, clean_tokens
+from news_monitor import is_topic_duplicate, get_topic_fingerprint
 
 # ===== THE REAL PROBLEM: OpenAI sandbox articles from different sources =====
 openai_titles = [

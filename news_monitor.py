@@ -1,10 +1,9 @@
 from __future__ import annotations
 import httpx
-import xml.etree.ElementTree as ET
 import logging
 import json
 import asyncio
-from typing import Any, Optional
+from typing import Any
 from datetime import datetime
 import config
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
@@ -166,7 +165,7 @@ async def fetch_rss(url: str, source_name: str = "") -> tuple[list[dict], bool]:
     """Fetch and parse RSS/Atom feed into a list of articles using feedparser and httpx. Returns (articles, success_flag)."""
     articles = []
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
         "Accept": "application/rss+xml, application/rdf+xml, application/atom+xml, application/xml, text/xml, */*"
     }
     try:
@@ -224,7 +223,7 @@ async def fetch_article_content(url: str) -> tuple[str, bool]:
         return "", False
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36"
         }
         client_kwargs: dict[str, Any] = {"timeout": 12.0, "follow_redirects": True}
         if config.PROXY_URL:
@@ -297,7 +296,7 @@ Return JSON ONLY:
 }}"""
 
     if config.GEMINI_API_KEY:
-        for g_model in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
+        for g_model in ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             payload: dict[str, Any] = {
                 "contents": [{"parts": [{"text": prompt}]}],
@@ -501,9 +500,10 @@ Return ONLY valid JSON:
     # 1. Try Gemini API first if key is available
     if config.GEMINI_API_KEY:
         gemini_models = [
+            "gemini-3.8-flash",
+            "gemini-3.1-flash-lite",
             "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-1.5-flash"
+            "gemini-2.5-flash-lite"
         ]
         for g_model in gemini_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"

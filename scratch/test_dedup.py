@@ -1,6 +1,5 @@
 
 import asyncio
-import time
 from datetime import datetime
 import os
 import sys
@@ -45,8 +44,6 @@ async def main():
     
     # We will inject some mock `all_articles` into `news_monitor.py` by overriding it temporarily
     import news_monitor
-    
-    original_fetch = news_monitor.fetch_rss
     
     async def mock_fetch_rss(url):
         return [

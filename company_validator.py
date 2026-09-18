@@ -53,7 +53,6 @@ def _get_known_target_companies() -> set[str]:
 
 def set_validation_cache(cache: dict[str, bool]) -> None:
     """Load persistent CVR cache from state."""
-    global VALIDATION_CACHE
     if isinstance(cache, dict):
         VALIDATION_CACHE.update(cache)
 
@@ -138,8 +137,13 @@ async def check_accreditation(company_name: str) -> bool:
                         data = response.json()
                         if not data.get("error"):
                             # Danish DB07 IT industry codes: 58 (software/games), 61 (telecom), 62 (IT programming/consulting), 63 (hosting/web portals)
+                            industry_code = data.get("industrycode") or data.get("industry_code") or ""
                             code_str = str(industry_code).strip()
-                            is_approved = any(code_str.startswith(prefix) for prefix in ("58", "61", "62", "63")) or data.get("employees", 0) > 10
+                            try:
+                                employees = int(data.get("employees") or 0)
+                            except (ValueError, TypeError):
+                                employees = 0
+                            is_approved = any(code_str.startswith(prefix) for prefix in ("58", "61", "62", "63")) or employees > 10
                             VALIDATION_CACHE[normalized] = is_approved
                             return is_approved
                         else:

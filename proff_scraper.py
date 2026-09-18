@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from typing import Any
 try:
@@ -22,7 +21,6 @@ async def discover_it_companies(context: BrowserContext) -> list[dict]:
     """
     page = await context.new_page()
     await stealth_async(page)
-    from typing import Any
     discovered: list[dict[str, Any]] = []
     
     try:
