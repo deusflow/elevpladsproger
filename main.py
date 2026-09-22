@@ -86,6 +86,7 @@ async def load_state(state_key: str = "jobs_state") -> dict[str, Any]:
                                             state = {
                                                 "seen_news": legacy_loaded.get("seen_news", []),
                                                 "posted_news": legacy_loaded.get("posted_news", []),
+                                                "posted_news_records": legacy_loaded.get("posted_news_records", []),
                                                 "tip_history": legacy_loaded.get("tip_history", {}),
                                                 "feed_failures": legacy_loaded.get("feed_failures", {}),
                                                 "notified_feed_failures": legacy_loaded.get("notified_feed_failures", {}),
@@ -743,6 +744,12 @@ async def main():
             state_updated = True
             state["posted_news"] = state.get("posted_news", []) + posted_news_titles
             state["posted_news"] = state["posted_news"][-30:] # prevent infinite growth
+
+        # Persist structured posted_news_records for cross-lingual dedup
+        new_records = news_result.get("posted_news_records", [])
+        if new_records:
+            state_updated = True
+            state["posted_news_records"] = new_records
 
         # 1. Feed Health-Check Alerts
         feed_failures = state.get("feed_failures", {})

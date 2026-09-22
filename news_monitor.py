@@ -13,37 +13,203 @@ import feedparser
 import re
 import time
 
-DANISH_STOPWORDS = {
+# Bilingual stopwords: Danish + English (for correct Jaccard across mixed-language feeds)
+STOPWORDS = {
+    # Danish
     "i", "af", "på", "med", "for", "at", "en", "et", "den", "det", "de", "til", "fra", "om",
     "er", "som", "vil", "har", "ikke", "der", "sig", "kan", "var", "også", "men", "da", "nu",
     "ud", "over", "under", "efter", "ny", "nyt", "nye", "mod", "mere", "mange", "flere",
     "blev", "bliver", "ved", "kun", "når", "andre", "meget", "alle", "denne", "disse",
-    "skal", "her", "hvad", "hvordan", "hvorfor", "stor", "stort", "store"
+    "skal", "her", "hvad", "hvordan", "hvorfor", "stor", "stort", "store",
+    "og", "eller", "så", "vi",
+    # English
+    "the", "and", "for", "with", "that", "this", "its", "has", "are", "was", "were",
+    "from", "will", "into", "been", "have", "had", "but", "not", "can", "all", "more",
+    "than", "just", "now", "new", "how", "why", "what", "when", "who", "also", "about",
+    "says", "said", "could", "would", "should", "being", "their", "them", "they", "some",
+    "out", "its", "your", "you", "may", "two", "first", "most", "after", "before",
+    "get", "got", "one", "set", "use", "way", "per", "via",
 }
+# Legacy alias for backward compatibility
+DANISH_STOPWORDS = STOPWORDS
 
-# Synonym groups: words that mean the same thing in news context
-# If two titles share the same entity AND matching synonym groups, they're about the same event
+# Synonym groups: bilingual (DA+EN) words that represent the same event type.
+# If two titles share a named entity AND a matching synonym group, they're about the same event.
 SYNONYM_GROUPS = [
-    {"sandbox", "sandkasse", "isoleret", "kontrolleret", "miljø", "miljøet", "isolation"},
-    {"brød", "bryder", "undslap", "undslappet", "undslippe", "omgik", "omgå", "flygtede", "escapede", "broke", "escape", "escaped", "vyrset"},
-    {"agent", "model", "modellen", "agenten", "bot", "system", "ai", "kunstig", "intelligens"},
-    {"sikkerhed", "sikkerhedstest", "sikkerhedsforanstaltninger", "sikkerhedsforskere", "sikkerheds", "security"},
-    {"fyring", "fyringer", "afskedigelse", "afskedigelser", "nedskæringer", "nedskæring", "opsigelse", "opsigelser", "layoff", "layoffs"},
-    {"ansætter", "ansættelse", "ansættelser", "rekrutterer", "rekruttering", "hiring"},
-    {"hacket", "hacking", "hack", "hackere", "cyberangreb", "angreb", "databrud", "breach", "lækket", "læk"},
-    {"lancerer", "lancering", "præsenterer", "præsentation", "annoncerer", "annoncering", "offentliggør", "udgivelse", "release"},
-    {"opkøb", "opkøber", "køber", "køb", "acquisition", "overtager", "overtagelse", "fusionerer", "fusion"},
+    # 0: Sandbox / Isolation
+    {"sandbox", "sandkasse", "isoleret", "kontrolleret", "miljø", "miljøet", "isolation", "sandboxed", "containerized"},
+    # 1: Escape / Breakout
+    {"brød", "bryder", "undslap", "undslappet", "undslippe", "omgik", "omgå", "flygtede",
+     "escapede", "broke", "escape", "escaped", "bypass", "bypassed", "bypasses", "breakout", "jailbreak"},
+    # 2: AI Agent / Model
+    {"agent", "model", "modellen", "agenten", "bot", "system", "kunstig", "intelligens"},
+    # 3: Security / Vulnerability
+    {"sikkerhed", "sikkerhedstest", "sikkerhedsforskere", "sikkerheds", "security",
+     "vulnerability", "vulnerabilities", "exploit", "exploited", "zero-day", "zeroday", "cve",
+     "sårbarhed", "sårbarheder", "sikkerhedsbrist"},
+    # 4: Layoff / Firing / Restructuring
+    {"fyring", "fyringer", "fyrer", "fyret", "afskedigelse", "afskedigelser", "nedskæringer", "nedskæring",
+     "opsigelse", "opsigelser", "layoff", "layoffs", "laid", "fires", "fired", "firing", "cuts",
+     "restructuring", "restrukturering", "downsizing"},
+    # 5: Hiring / Recruitment
+    {"ansætter", "ansættelse", "ansættelser", "rekrutterer", "rekruttering",
+     "hiring", "hires", "recruits", "recruitment"},
+    # 6: Hack / Breach / Leak
+    {"hacket", "hacking", "hack", "hackere", "cyberangreb", "databrud",
+     "breach", "breached", "leaked", "leak", "lækket", "læk", "compromised"},
+    # 7: Launch / Release / Announce / Unveil
+    {"lancerer", "lancering", "præsenterer", "præsentation", "annoncerer", "annoncering",
+     "offentliggør", "udgivelse", "release", "released", "releases", "launches", "launched",
+     "launch", "announces", "announced", "unveils", "unveiled", "reveals", "revealed",
+     "introduces", "introduced", "debuts", "ships", "shipped", "rolls out"},
+    # 8: Acquisition / Merger / Buyout
+    {"opkøb", "opkøber", "køber", "køb", "acquisition", "acquires", "acquired",
+     "overtager", "overtagelse", "fusionerer", "fusion", "merger", "buyout", "takeover"},
+    # 9: Apprentice / Education
     {"elev", "elevplads", "elevpladser", "lærling", "lærlinge", "læreplads", "lærepladser", "apprentice"},
+    # 10: Outage / Downtime / Crash
+    {"nedbrud", "afbrydelse", "nede", "outage", "downtime", "down", "crash", "crashed",
+     "disruption", "forstyrrelse", "offline"},
+    # 11: Benchmark / Performance / Record
+    {"benchmark", "benchmarks", "benchmarked", "performance", "ydelse", "hastighed",
+     "record", "rekord", "rekordstor", "fastest", "hurtigste"},
+    # 12: Production / Manufacturing / Fabrication
+    {"produktion", "producetion", "production", "manufacturing", "fabrication", "fabrikation",
+     "masseproduktion"},
 ]
 
-# Key named entities that anchor topic identity
+# Key named entities that anchor topic identity (120+ brands, platforms, languages, chips)
 KEY_ENTITIES = {
-    "openai", "chatgpt", "gpt", "google", "gemini", "microsoft", "copilot",
-    "apple", "nvidia", "crowdstrike", "meta", "amazon", "aws", "tesla",
-    "aub", "eud", "eux", "datatekniker", "anthropic", "claude", "deepmind",
-    "github", "docker", "kubernetes", "linux", "android", "tiktok",
-    "twitter", "threads", "instagram", "whatsapp", "signal", "telegram"
+    # AI / LLM companies & models
+    "openai", "chatgpt", "gpt", "anthropic", "claude", "deepmind", "gemini", "deepseek",
+    "mistral", "llama", "meta", "copilot", "huggingface", "perplexity", "midjourney",
+    "stability", "cohere",
+    # Big Tech
+    "google", "microsoft", "apple", "amazon", "aws", "nvidia", "tesla", "samsung",
+    "oracle", "ibm", "salesforce", "adobe", "netflix", "spotify", "uber",
+    # Semiconductor & Hardware
+    "amd", "intel", "tsmc", "arm", "qualcomm", "broadcom", "mediatek", "asml",
+    "micron", "sk hynix", "risc-v",
+    # Cloud & Infrastructure
+    "cloudflare", "fastly", "hashicorp", "terraform", "datadog", "snowflake",
+    "docker", "kubernetes", "github", "gitlab",
+    # Programming Languages & Runtimes
+    "rust", "golang", "zig", "swift", "kotlin", "python", "typescript", "deno", "bun",
+    "dotnet", "java", "elixir", "haskell", "clojure", "nim", "odin", "mojo", "julia",
+    # Databases
+    "postgresql", "postgres", "redis", "sqlite", "mysql", "mongodb", "clickhouse",
+    "cockroachdb", "supabase", "neon", "turso",
+    # OS & Distributions
+    "linux", "debian", "ubuntu", "fedora", "arch", "nixos", "android", "ios", "macos",
+    "windows", "freebsd", "chromeos",
+    # Browsers
+    "chrome", "chromium", "firefox", "safari", "webkit",
+    # Game Engines & Graphics
+    "unreal", "unity", "godot", "webgpu", "vulkan", "directx", "opengl",
+    "cryengine", "lumberyard",
+    # Security
+    "crowdstrike", "palo alto", "fortinet", "mandiant", "sentinelone",
+    # Social / Communication
+    "twitter", "threads", "instagram", "whatsapp", "signal", "telegram",
+    "tiktok", "discord", "slack", "zoom",
+    # Infra / Space
+    "spacex", "starlink",
+    # Danish Education
+    "aub", "eud", "eux", "datatekniker",
 }
+
+# ─── 6 IT CATEGORIES for diverse candidate selection ───
+CATEGORY_KEYWORDS: dict[str, list[str]] = {
+    "systems_dev": [
+        "linux kernel", "kernel", "compiler", "compilers", "llvm", "gcc", "clang",
+        "postgresql", "postgres", "sqlite", "mysql", "redis", "clickhouse", "cockroachdb",
+        "database", "rust", "golang", "zig", "swift", "kotlin", "elixir", "haskell", "mojo",
+        "typescript", "javascript", "python", "c#", "dotnet", ".net", "java", "deno", "bun",
+        "docker", "kubernetes", "k8s", "terraform", "ansible", "nixos", "nix",
+        "open source", "open-source", "git", "github", "gitlab",
+        "microservices", "monolith", "api", "grpc", "graphql",
+        "distributed systems", "consensus", "raft", "paxos",
+        "backend", "frontend", "framework", "devops", "cicd", "ci/cd",
+        "linux", "freebsd", "debian", "ubuntu", "fedora", "arch",
+        "wasm", "webassembly", "runtime", "jit",
+    ],
+    "hardware_chips": [
+        "amd", "intel", "tsmc", "arm", "risc-v", "qualcomm", "broadcom", "mediatek",
+        "asml", "micron", "sk hynix", "samsung",
+        "cpu", "gpu", "npu", "tpu", "processor", "microarchitecture",
+        "zen", "raptor lake", "arrow lake", "meteor lake",
+        "nanometer", "2nm", "3nm", "5nm", "7nm",
+        "ddr5", "ddr6", "hbm", "pcie", "nvme", "ssd", "nand", "dram",
+        "chip", "chips", "semiconductor", "halvleder", "transistor",
+        "motherboard", "bundkort", "overclocking",
+        "quantum", "kvante", "qubit", "superconducting",
+        "robotik", "humanoid", "robot", "spacex", "starlink",
+    ],
+    "infosec": [
+        "zero-day", "0day", "cve", "exploit", "vulnerability", "sårbarhed",
+        "reverse engineering", "side-channel", "spectre", "meltdown",
+        "cryptography", "encryption", "tls", "ssl", "post-quantum",
+        "pentesting", "red team", "blue team", "bug bounty",
+        "crowdstrike", "mandiant", "sentinelone", "fortinet",
+        "apt", "threat actor", "nation-state",
+        "privilege escalation", "rce", "remote code execution",
+        "use-after-free", "buffer overflow", "memory safety",
+    ],
+    "gamedev_graphics": [
+        "unreal engine", "unity", "godot", "cryengine",
+        "webgpu", "vulkan", "directx", "opengl", "metal",
+        "ray tracing", "path tracing", "nanite", "lumen", "dlss", "fsr",
+        "shaders", "shader", "rendering", "renderer",
+        "game engine", "game dev", "gamedev", "spiludvikling",
+        "fps", "rpg", "mmorpg", "indie game",
+        "playstation", "ps5", "ps6", "xbox", "nintendo", "switch 2", "steam",
+        "vr", "ar", "xr", "virtual reality", "mixed reality",
+        "procedural generation", "physics engine",
+        "io interactive", "playdead", "sybo",
+    ],
+    "ai_ml": [
+        "llm", "large language model", "transformer", "attention mechanism",
+        "mixture of experts", "moe", "rag", "fine-tuning", "rlhf", "dpo",
+        "inference", "training", "gpu cluster", "tpu pod",
+        "openai", "anthropic", "deepseek", "mistral", "llama", "gemini",
+        "chatgpt", "claude", "copilot", "midjourney", "stable diffusion",
+        "neural network", "deep learning", "machine learning",
+        "ai-model", "ai model", "foundation model",
+        "computer vision", "nlp", "multimodal",
+        "huggingface", "mlops",
+    ],
+    "tech_trends": [
+        "startup", "funding", "ipo", "valuation",
+        "open source", "license", "sustainability",
+        "privacy", "gdpr", "regulation",
+        "denmark", "danish", "dansk", "european", "eu",
+        "supercomputer", "datacenter", "data center",
+        "5g", "6g", "satellite", "fiber",
+        "apple", "google", "amazon", "meta", "microsoft",
+        "cloud", "edge computing", "iot",
+    ],
+}
+
+# Compile category patterns for fast matching
+_CATEGORY_PATTERNS: dict[str, re.Pattern] = {}
+for _cat, _kws in CATEGORY_KEYWORDS.items():
+    _pattern = r'\b(?:' + '|'.join(map(re.escape, sorted(_kws, key=len, reverse=True))) + r')\b'
+    _CATEGORY_PATTERNS[_cat] = re.compile(_pattern, re.IGNORECASE)
+
+
+def classify_article_category(title: str, description: str = "") -> str:
+    """Classify an article into one of 6 IT categories using keyword matching.
+    Returns the category with the most keyword hits. Falls back to 'tech_trends'."""
+    text = f"{title} {description}".lower()
+    scores: dict[str, int] = {}
+    for cat, pattern in _CATEGORY_PATTERNS.items():
+        hits = len(pattern.findall(text))
+        if hits > 0:
+            scores[cat] = hits
+    if not scores:
+        return "tech_trends"
+    return max(scores, key=scores.get)
+
 
 # Danish Tech, Gaming & IT Education keywords for broad feeds (e.g. DR.dk)
 DR_TECH_KEYWORDS = [
@@ -63,14 +229,24 @@ WOW_TECH_PATTERNS = [
     # Gaming & GameDev & 3D Graphics & Consoles & WebGPU
     r'\b(?:spil|gaming|gamer|spiludvikling|gamedev|game engine|unreal engine|unity|godot|grafik|graphics|ray tracing|path tracing|dlss|fsr|webgpu|vulkan|directx|shaders|playstation|ps5|xbox|nintendo|switch 2|steam|gpu|geforce|rtx|radeon|gameplay|konsol|spilbranche|io interactive|playdead|sybo|fps|rpg|vr|virtual reality|game dev|procedural)\b',
     # Programming, Software Architecture, Tools, Compilers & Releases
-    r'\b(?:developer|udvikler|programmering|softwareudvikling|open source|framework|compiler|c#|\.net|dotnet|python|rust|golang|typescript|javascript|api|arkitektur|architecture|database|github|gitlab|docker|kubernetes|linux kernel|release|v1\.|v2\.|algoritme|backend|frontend|microservices)\b',
+    r'\b(?:developer|udvikler|programmering|softwareudvikling|open source|framework|compiler|c#|\.net|dotnet|python|rust|golang|zig|swift|kotlin|typescript|javascript|api|arkitektur|architecture|database|github|gitlab|docker|kubernetes|linux kernel|release|algoritme|backend|frontend|microservices|wasm|webassembly)\b',
     # AI Models, Quantum, Chips & Breakthrough Engineering
-    r'\b(?:gennembrud|breakthrough|revolution|supercomputer|kvante|quantum|chip|chips|halvleder|semiconductor|processor|robot|robotik|humanoid|autonom|llm|ai-model|deepseek|openai|chatgpt|gpt-5|gpt-6|anthropic|claude|gemini|neural|innovation|opfindelse|fremtidens teknologi)\b'
+    r'\b(?:gennembrud|breakthrough|revolution|supercomputer|kvante|quantum|chip|chips|halvleder|semiconductor|processor|robot|robotik|humanoid|autonom|llm|ai-model|deepseek|openai|chatgpt|gpt-5|gpt-6|anthropic|claude|gemini|neural|innovation|opfindelse|fremtidens teknologi)\b',
+    # Hardware, CPUs, GPUs, Memory, Storage & Microarchitecture (NEW — was a blind spot)
+    r'\b(?:amd|intel|tsmc|arm|risc-v|qualcomm|broadcom|asml|micron|cpu|npu|tpu|microarchitecture|zen\s?\d|nanometer|2nm|3nm|5nm|ddr5|ddr6|hbm|pcie|nvme|ssd|nand|dram|transistor|fab|foundry|die|wafer|lithography|euv)\b',
+    # Systems Engineering, Databases, Runtimes & Protocols (NEW — was a blind spot)
+    r'\b(?:postgresql|postgres|sqlite|redis|clickhouse|mongodb|cockroachdb|mysql|supabase|neon|turso|grpc|graphql|websockets|distributed|consensus|raft|paxos|etcd|nixos|nix|deno|bun|llvm|gcc|clang|jit|ebpf|io_uring)\b',
 ]
 
 ROUTINE_INCIDENT_PATTERNS = [
-    # Dull municipal failures, routine outages, minor administrative disputes, petty lawsuits, repetitive malware/phishing/DDoS
-    r'\b(?:nedbrud|it-svigt|retssag|stævning|sagsøgt|datatilsynet|bøde|bødeforlæg|kritik af|kommune ramt|skole ramt|hospital ramt|politiet advarer|svindel|fup|slettefejl|møgsag|aktindsigt|skattestyrelsen|kontraktstrid|udbudsskandale|phishing|ransomware|ddos|hackerangreb|angreb rammer|angreb mod|hacket|databrud|sikkerhedsbrist|it-kriminalitet|afpresning)\b'
+    # Municipal/administrative dull incidents only (compound context required).
+    # Deep infosec (zero-day, side-channel, kernel exploit) is NOT penalized.
+    r'\b(?:nedbrud|it-svigt|retssag|stævning|sagsøgt|datatilsynet|bøde|bødeforlæg|kritik af|kontraktstrid|udbudsskandale|slettefejl|møgsag|aktindsigt|skattestyrelsen|it-kriminalitet|afpresning)\b',
+    # Routine mass-incident spam (phishing alerts, generic ransomware/DDoS reports with no technical depth)
+    r'\b(?:kommune ramt|skole ramt|hospital ramt|politiet advarer|svindel|fup)\b',
+    # Only penalize phishing/ransomware/ddos in context of routine alerts, not deep analysis
+    r'(?:advarer|ramt|rammes|rammer|angriber).*?\b(?:phishing|ransomware|ddos)\b',
+    r'\b(?:phishing|ransomware|ddos)\b.*?(?:advarer|ramt|rammes|rammer|angriber)',
 ]
 
 def calculate_interest_score(title: str, description: str = "") -> int:
@@ -87,7 +263,17 @@ def calculate_interest_score(title: str, description: str = "") -> int:
 
 def clean_tokens(s: str) -> set[str]:
     words = re.findall(r'\w+', s.lower())
-    return {w for w in words if w not in DANISH_STOPWORDS and len(w) > 2}
+    return {w for w in words if w not in STOPWORDS and len(w) > 2}
+
+def extract_version_markers(title: str) -> set[str]:
+    """Extract version numbers and spec markers for precise dedup (e.g. 'rtx 5090', 'zen 5', 'linux 6.14')."""
+    text = title.lower()
+    markers: set[str] = set()
+    # Patterns: "word number" or "word-number" (e.g. "ryzen 9000", "gpt-5", "linux 6.14")
+    for m in re.finditer(r'([a-z]+)[\s\-](\d+(?:\.\d+)?)', text):
+        markers.add(f"{m.group(1)}_{m.group(2)}")
+    # Raw model numbers like "5090", "9000" when preceded by known product lines
+    return markers
 
 def get_topic_fingerprint(title: str) -> set[str]:
     """Extract a normalized topic fingerprint from a title.
@@ -108,11 +294,17 @@ def get_topic_fingerprint(title: str) -> set[str]:
                 fingerprint.add(f"syn:{i}")
                 break
 
+    # 3. Add version markers (e.g. "ryzen_9000", "gpt_5", "linux_6.14")
+    version_markers = extract_version_markers(title)
+    for vm in version_markers:
+        fingerprint.add(f"ver:{vm}")
+
     return fingerprint
 
 def is_topic_duplicate(title1: str, title2: str) -> bool:
     """Check if two titles are about the same topic/event.
-    Uses a combination of: exact normalized matching, entity overlap, synonym group matching, and Jaccard similarity."""
+    Uses a combination of: exact normalized matching, entity overlap, synonym group matching,
+    version marker matching, and Jaccard similarity."""
     if not title1 or not title2:
         return False
 
@@ -129,7 +321,7 @@ def is_topic_duplicate(title1: str, title2: str) -> bool:
         intersection = set1.intersection(set2)
         union = set1.union(set2)
         jaccard = len(intersection) / len(union)
-        if jaccard > 0.5:  # Lowered from 0.6 since we strip stopwords now
+        if jaccard > 0.45:
             return True
 
     # Layer 2: Topic fingerprint matching
@@ -139,27 +331,116 @@ def is_topic_duplicate(title1: str, title2: str) -> bool:
     if not fp1 or not fp2:
         return False
 
-    # Both must share at least one named entity
-    entities1 = {t for t in fp1 if not t.startswith("syn:")}
-    entities2 = {t for t in fp2 if not t.startswith("syn:")}
+    # Extract entities, synonyms, and version markers
+    entities1 = {t for t in fp1 if not t.startswith(("syn:", "ver:"))}
+    entities2 = {t for t in fp2 if not t.startswith(("syn:", "ver:"))}
     shared_entities = entities1 & entities2
 
-    if not shared_entities:
-        return False
+    vers1 = {t for t in fp1 if t.startswith("ver:")}
+    vers2 = {t for t in fp2 if t.startswith("ver:")}
+    shared_vers = vers1 & vers2
 
-    # If they share an entity AND at least one synonym group, it's the same topic
     syns1 = {t for t in fp1 if t.startswith("syn:")}
     syns2 = {t for t in fp2 if t.startswith("syn:")}
     shared_syns = syns1 & syns2
 
+    if not shared_entities:
+        return False
+
+    # Entity + synonym match → same event
     if shared_entities and shared_syns:
         return True
 
-    # If they share 2+ entities, likely same topic even without synonym match
+    # Entity + version marker match → same product/release (e.g. "ryzen_9000")
+    if shared_entities and shared_vers:
+        return True
+
+    # 2+ shared entities → same topic even without synonym/version
     if len(shared_entities) >= 2:
         return True
 
     return False
+
+
+def select_diverse_candidates(articles: list[dict], state: dict) -> list[dict]:
+    """Select a balanced basket of candidates: best article from each distinct category,
+    with cooldown penalties for recently posted categories and entities."""
+    posted_records = state.get("posted_news_records", [])
+    
+    # Compute recent categories and entities from posted_news_records (last 10)
+    recent_cats = [r.get("category", "") for r in posted_records[-10:]]
+    recent_ents = set()
+    for r in posted_records[-10:]:
+        recent_ents.update(r.get("entities", []))
+
+    # Classify and score each article with cooldown adjustments
+    for art in articles:
+        cat = classify_article_category(art["title"], art.get("description", ""))
+        art["category"] = cat
+        
+        base_score = art.get("interest_score", 0)
+        
+        # Cooldown penalties
+        if recent_cats and cat == recent_cats[-1]:
+            base_score -= 12  # Last posted category penalty
+        elif cat in recent_cats:
+            base_score -= 6   # Recently posted category penalty
+        
+        # Entity cooldown: penalize if article's main entities were recently posted
+        art_entities = {t for t in clean_tokens(art["title"]) if t in KEY_ENTITIES}
+        art["detected_entities"] = list(art_entities)
+        overlap_count = len(art_entities & recent_ents)
+        if overlap_count > 0:
+            base_score -= overlap_count * 10
+        
+        # Freshness bonus for underrepresented categories
+        if cat not in recent_cats:
+            base_score += 8
+        
+        # Breaking News Override: if original score was very high, don't let cooldown kill it
+        if art.get("interest_score", 0) > 20:
+            base_score = max(base_score, art["interest_score"] - 4)
+        
+        art["adjusted_score"] = base_score
+
+    # Build basket: pick best article per category, then fill remaining slots
+    best_per_cat: dict[str, dict] = {}
+    for art in articles:
+        cat = art["category"]
+        if cat not in best_per_cat or art["adjusted_score"] > best_per_cat[cat]["adjusted_score"]:
+            best_per_cat[cat] = art
+
+    # Order: prioritize categories not in recent_cats
+    category_order = ["systems_dev", "hardware_chips", "infosec", "gamedev_graphics", "ai_ml", "tech_trends"]
+    basket: list[dict] = []
+    used_links: set[str] = set()
+    
+    # First pass: categories not recently posted
+    for cat in category_order:
+        if cat in best_per_cat and cat not in recent_cats:
+            art = best_per_cat[cat]
+            if art["link"] not in used_links:
+                basket.append(art)
+                used_links.add(art["link"])
+    
+    # Second pass: remaining categories
+    for cat in category_order:
+        if cat in best_per_cat and best_per_cat[cat]["link"] not in used_links:
+            basket.append(best_per_cat[cat])
+            used_links.add(best_per_cat[cat]["link"])
+    
+    # Fill up to 6 with next-best articles not yet included
+    remaining = sorted(
+        [a for a in articles if a["link"] not in used_links],
+        key=lambda x: x.get("adjusted_score", 0), reverse=True
+    )
+    for art in remaining:
+        if len(basket) >= 6:
+            break
+        basket.append(art)
+        used_links.add(art["link"])
+
+    return basket
 
 async def fetch_rss(url: str, source_name: str = "") -> tuple[list[dict], bool]:
     """Fetch and parse RSS/Atom feed into a list of articles using feedparser and httpx. Returns (articles, success_flag)."""
@@ -401,9 +682,13 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], posted
     if (not config.GEMINI_API_KEY and not config.GROQ_API_KEY) or not articles:
         return {"restructuring_companies": [], "digest_ru": "", "selected_tip_term": selected_category}
 
-    # Split posted_news into headlines for separate dedup
-    recent_headlines = [t for t in posted_news if not t.startswith("TIP:")]
-    recent_topics_str = "\n".join([f"- {t}" for t in recent_headlines[-15:]]) if recent_headlines else "None"
+    # Build dedup context from posted_news_records (original titles) + legacy posted_news
+    posted_records = state.get("posted_news_records", []) if state else []
+    recent_headlines = [r.get("original_title", r.get("headline_ru", "")) for r in posted_records[-15:]]
+    # Also include legacy posted_news headlines
+    legacy_headlines = [t for t in posted_news if not t.startswith("TIP:")]
+    all_recent = list(dict.fromkeys(recent_headlines + legacy_headlines))[-15:]  # dedup, keep order
+    recent_topics_str = "\n".join([f"- {t}" for t in all_recent]) if all_recent else "None"
 
     # Enrich candidate articles with real webpage text in parallel
     async def enrich_article(art: dict) -> dict:
@@ -411,15 +696,14 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], posted
         art_copy = dict(art)
         art_copy["body"] = body
         art_copy["is_paywalled"] = is_paywalled
+        # Preserve category and entities from select_diverse_candidates
+        art_copy["category"] = art.get("category", "tech_trends")
+        art_copy["detected_entities"] = art.get("detected_entities", [])
         return art_copy
 
     logger.info("Fetching full article texts for candidate news...")
-    enriched_articles = await asyncio.gather(*[enrich_article(a) for a in articles[:4]])
-    for a in articles[4:6]:
-        art_copy = dict(a)
-        art_copy["body"] = ""
-        art_copy["is_paywalled"] = False
-        enriched_articles.append(art_copy)
+    # Enrich up to 6 articles (category-balanced basket from select_diverse_candidates)
+    enriched_articles = await asyncio.gather(*[enrich_article(a) for a in articles[:6]])
 
     # Prioritize completely free, full-text articles over paywalled snippets
     enriched_articles.sort(
@@ -427,19 +711,31 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], posted
         reverse=True
     )
 
-    # Build compact context string with full text (keeps total prompt under 2500 tokens for Groq TPM limit)
+    # Category display names for prompt badges
+    cat_display = {
+        "systems_dev": "Systems & Software Engineering",
+        "hardware_chips": "Hardware & Semiconductors",
+        "infosec": "Cybersecurity & Exploits",
+        "gamedev_graphics": "GameDev & 3D Graphics",
+        "ai_ml": "AI & Machine Learning",
+        "tech_trends": "Tech Trends & Industry",
+    }
+
+    # Build compact context string with category badges and full text
     articles_snippet = ""
-    for idx, art in enumerate(enriched_articles[:4]):
+    for idx, art in enumerate(enriched_articles[:6]):
         desc = art.get('description', '')
         body = art.get('body', '')
         is_pw = art.get('is_paywalled', False)
+        cat = art.get('category', 'tech_trends')
         
+        cat_badge = f" [Category: {cat_display.get(cat, cat)}]"
         pw_badge = " [PAYWALLED / SHORT TEASER]" if is_pw else ""
         text_to_show = body if (body and len(body) > 150) else desc
-        if len(text_to_show) > 900:
-            text_to_show = text_to_show[:900] + "..."
+        if len(text_to_show) > 800:
+            text_to_show = text_to_show[:800] + "..."
             
-        articles_snippet += f"[{idx+1}] Title: {art['title']}{pw_badge}\nLink: {art['link']}\nContent:\n{text_to_show}\n\n"
+        articles_snippet += f"[{idx+1}] Title: {art['title']}{cat_badge}{pw_badge}\nLink: {art['link']}\nContent:\n{text_to_show}\n\n"
 
     companies_str = ", ".join(target_companies)
 
@@ -447,14 +743,18 @@ async def ask_llm_news(articles: list[dict], target_companies: list[str], posted
 
 Task 1: Check if any of these companies have layoffs/restructuring news: {companies_str}
 
-Task 2: Write ONE Russian tech digest post summarizing the MOST EXCITING, SUBSTANTIVE, and INNOVATIVE tech/gaming/developer article from the list.
+Task 2: Write ONE Russian tech digest post summarizing the MOST EXCITING, SUBSTANTIVE, and INNOVATIVE article from the list.
 
-ALREADY PUBLISHED HEADLINES (DO NOT write about these events again):
+Each article is tagged with a [Category]. You have a diverse mix of categories: systems engineering, hardware, security, game development, AI, and general tech trends. PRIORITIZE VARIETY — choose the most technically deep and exciting article, BUT AVOID repeating the same category or company as recent posts.
+
+ALREADY PUBLISHED HEADLINES (DO NOT write about these events or topics again):
 {recent_topics_str}
 
 CRITICAL EDITORIAL & CONTENT PRIORITIES:
-- HIGHEST PRIORITY: Technical breakthroughs, game development & gaming industry engineering (Unreal Engine 5, Unity, Godot, WebGPU/Vulkan graphics, physics, game mechanics, PC/console tech, studio innovations), developer tools, modern programming languages & frameworks (Rust, C#, Go, Python, TypeScript), cutting-edge AI models/engineering, hardware/semiconductors, and inspiring "WOW" milestones.
-- STRICTLY DE-PRIORITIZE: Routine cyberattacks, malware, phishing alerts, standard ransomware incidents, petty data privacy fines, municipal IT downtime, or bureaucratic court battles. If candidates contain both routine incident alerts and technical/gaming/developer innovation, you MUST choose the technical/gaming/developer innovation! Readers want inspiration, cutting-edge technology, and developer/gaming excitement!
+- HIGHEST PRIORITY: Deep engineering content — Linux kernel patches, compiler innovations, database internals, CPU/GPU microarchitecture, semiconductor breakthroughs, zero-day exploit analysis, game engine rendering tech, novel algorithms, and systems programming.
+- ALSO HIGH PRIORITY: Game development & gaming industry engineering (Unreal Engine, Unity, Godot, WebGPU/Vulkan, ray tracing), developer tools, modern programming languages (Rust, Zig, Go, C#, TypeScript), substantive AI/ML architecture (not marketing fluff).
+- STRICTLY DE-PRIORITIZE: Routine cyberattacks, malware alerts, standard ransomware, pricing updates, petty data privacy fines, municipal IT downtime, or bureaucratic court battles.
+- ROTATE TOPICS: If recent posts covered AI, choose hardware or systems. If recent posts covered hardware, choose gamedev or infosec. Keep the channel diverse and exciting!
 
 CRITICAL ANTI-HALLUCINATION & FACTUALITY RULES (STRICT ZERO-HALLUCINATION POLICY):
 1. ZERO HALLUCINATIONS: Every fact, company name, technical detail, and quote in your news summary MUST be strictly grounded in the provided article content.
@@ -612,6 +912,7 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     """Fetch news, analyze with LLM, and return restructuring companies, digest, and used term if new articles found."""
     raw_seen = state.get("seen_news", [])
     posted_news = state.get("posted_news", [])
+    posted_records = state.get("posted_news_records", [])
     
     from datetime import timezone
     current_time = datetime.now(timezone.utc).timestamp()
@@ -626,6 +927,9 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
             item_time = item.get("timestamp", 0)
             if current_time - item_time <= 864000: # 10 days in seconds
                 seen_news.append(item)
+
+    # Prune posted_news_records older than 10 days
+    posted_records = [r for r in posted_records if current_time - r.get("timestamp", 0) <= 864000]
     
     # Collect all target companies (fail fast if configuration is corrupted)
     import json as json_lib
@@ -677,26 +981,34 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
             "restructuring_companies": [], 
             "digests_ru": [], 
             "seen_news": seen_news,
-            "posted_news_titles": []
+            "posted_news_titles": [],
+            "posted_news_records": posted_records
         }
 
-    # Filter out seen articles using topic fingerprint + link matching
+    # Filter out seen articles AND posted_news_records using topic fingerprint + link matching
     if force_post:
         logger.info("force_post is True, skipping seen_news check.")
         new_articles = all_articles
     else:
+        # Build combined dedup pool: seen_news + posted_news_records (original titles)
+        dedup_pool: list[dict[str, str]] = []
+        for seen in seen_news:
+            dedup_pool.append({"link": seen.get("link", ""), "title": seen.get("title", "")})
+        for rec in posted_records:
+            dedup_pool.append({"link": rec.get("link", ""), "title": rec.get("original_title", "")})
+        
         new_articles = []
         for art in all_articles:
             is_dupe = False
-            for seen in seen_news:
+            for pool_item in dedup_pool:
                 # Check by link (exact URL match)
-                if seen["link"] == art["link"]:
+                if pool_item["link"] and pool_item["link"] == art["link"]:
                     is_dupe = True
                     break
-                # Check by topic (catches same story from different sources/days)
-                if seen.get("title") and is_topic_duplicate(art["title"], seen["title"]):
+                # Check by topic (catches same story from different sources/days/languages)
+                if pool_item.get("title") and is_topic_duplicate(art["title"], pool_item["title"]):
                     is_dupe = True
-                    logger.info(f"Topic dedup blocked: '{art['title'][:60]}' matches seen '{seen['title'][:60]}'")
+                    logger.info(f"Topic dedup blocked: '{art['title'][:60]}' matches '{pool_item['title'][:60]}'")
                     break
             
             if not is_dupe:
@@ -704,7 +1016,7 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     
     if not new_articles:
         logger.info("No new news articles to process.")
-        return {"restructuring_companies": [], "digests_ru": [], "seen_news": seen_news, "posted_news_titles": []}
+        return {"restructuring_companies": [], "digests_ru": [], "seen_news": seen_news, "posted_news_titles": [], "posted_news_records": posted_records}
 
     # Score articles by technical innovation, gaming, and dev excitement vs dull incidents
     for art in new_articles:
@@ -721,23 +1033,26 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         if source_counts.get(src, 0) < 2:
             articles_to_process.append(art)
             source_counts[src] = source_counts.get(src, 0) + 1
-        if len(articles_to_process) >= 10:
+        if len(articles_to_process) >= 15:  # Expanded pool for diverse selection
             break
 
     if not articles_to_process:
-        articles_to_process = new_articles[:10]
+        articles_to_process = new_articles[:15]
 
-    top_title = articles_to_process[0].get('title', '')[:50] if articles_to_process else 'None'
-    top_score = articles_to_process[0].get('interest_score', 0) if articles_to_process else 0
-    logger.info(f"Found {len(new_articles)} new articles. Selected {len(articles_to_process)} high-interest candidate articles (top score {top_score}: '{top_title}')...")
+    # Apply category-balanced diverse selection with cooldown
+    diverse_basket = select_diverse_candidates(articles_to_process, state)
+    
+    cats_in_basket = set(a.get("category", "?") for a in diverse_basket)
+    top_title = diverse_basket[0].get('title', '')[:50] if diverse_basket else 'None'
+    logger.info(f"Found {len(new_articles)} new articles. Diverse basket: {len(diverse_basket)} articles across {cats_in_basket}. Top: '{top_title}'")
 
-    analysis = await ask_llm_news(articles_to_process, target_company_names, posted_news, state=state)
+    analysis = await ask_llm_news(diverse_basket, target_company_names, posted_news, state=state)
     digest_ru = analysis.get("digest_ru", "").strip()
     selected_tip_term = analysis.get("selected_tip_term", "")
     
     if not digest_ru:
         logger.warning("LLM generation failed for all models. Using high-quality full structure fallback digest.")
-        digest_ru = build_quality_fallback_digest(articles_to_process)
+        digest_ru = build_quality_fallback_digest(diverse_basket)
         analysis["digest_ru"] = digest_ru
         
     digest_ru = analysis.get("digest_ru", "").strip()
@@ -745,29 +1060,56 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     digests_ru = []
     posted_news_titles = []
     restructuring_comps = []
+    new_posted_records: list[dict[str, Any]] = []
 
     if digest_ru:
         digests_ru.append(digest_ru)
         
         # Extract headline for future deduplication tracking
         headline_match = re.search(r'<b>(.*?)</b>', digest_ru)
+        headline_ru = ""
         if headline_match:
-            posted_news_titles.append(headline_match.group(1).strip())
+            headline_ru = headline_match.group(1).strip()
+            posted_news_titles.append(headline_ru)
         else:
-            first_line = digest_ru.split('\n')[0][:100] # Fallback to first line
-            posted_news_titles.append(first_line.strip())
+            first_line = digest_ru.split('\n')[0][:100]
+            headline_ru = first_line.strip()
+            posted_news_titles.append(headline_ru)
+
+        # Try to identify which article the LLM chose (by link match in digest)
+        chosen_art = None
+        for art in diverse_basket:
+            if art.get("link", "") and art["link"] in digest_ru:
+                chosen_art = art
+                break
+        if not chosen_art and diverse_basket:
+            chosen_art = diverse_basket[0]  # fallback to first candidate
+
+        if chosen_art:
+            new_posted_records.append({
+                "headline_ru": headline_ru,
+                "original_title": chosen_art.get("title", ""),
+                "link": chosen_art.get("link", ""),
+                "category": chosen_art.get("category", "tech_trends"),
+                "entities": chosen_art.get("detected_entities", []),
+                "timestamp": current_time
+            })
             
         restructuring_comps.extend(analysis.get("restructuring_companies", []))
 
-    # CRITICAL FIX: Mark ALL new articles as seen (not just processed ones)
-    # This prevents articles at indexes 10+ from reappearing next run
+    # Smart seen_news: mark processed candidates as seen, but DON'T burn
+    # high-scoring articles from categories that weren't in the basket
+    basket_links = {a["link"] for a in diverse_basket}
     for art in new_articles:
         if not any(s["link"] == art["link"] for s in seen_news):
-            seen_news.append({
-                "link": art["link"],
-                "title": art["title"],  # Always store title for topic matching
-                "timestamp": art.get("timestamp", current_time)
-            })
+            # Always mark basket articles and low-score articles as seen
+            # Keep high-score articles from non-basket categories available for next run
+            if art["link"] in basket_links or art.get("interest_score", 0) <= 4:
+                seen_news.append({
+                    "link": art["link"],
+                    "title": art["title"],
+                    "timestamp": art.get("timestamp", current_time)
+                })
 
     # Dedup seen_news by link
     final_seen: list[dict[str, Any]] = []
@@ -779,12 +1121,17 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
 
     final_seen = final_seen[-600:]
 
+    # Merge new posted records into existing
+    updated_records = posted_records + new_posted_records
+    updated_records = updated_records[-30:]  # Keep last 30 records
+
     return {
         "restructuring_companies": list(set(restructuring_comps)),
         "digests_ru": digests_ru,
         "seen_news": final_seen,
         "posted_news_titles": posted_news_titles,
-        "selected_tip_term": selected_tip_term
+        "selected_tip_term": selected_tip_term,
+        "posted_news_records": updated_records
     }
 
 if __name__ == "__main__":

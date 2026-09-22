@@ -147,20 +147,31 @@ CITY_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, MIDTJYLLAND_CITIES)
 EXCLUSION_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, EXCLUDE_KEYWORDS)) + r')\b')
 TARGET_KEYWORD_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, TARGET_KEYWORDS)) + r')\b')
 
-# RSS Feeds for Danish IT, Gaming & Tech Innovations
+# Curated High-Value IT, Engineering, Architecture, Hardware & Danish Tech RSS Feeds
 RSS_FEEDS = {
-    "80.lv Game & 3D Tech": "https://80.lv/feed/",
-    "Eurogamer News": "https://www.eurogamer.net/feed/news",
+    # 1. Systems Engineering, Linux Kernel, Compilers, DBs, Architecture
+    "Phoronix": "https://www.phoronix.com/phoronix-rss.php",
+    "Hacker News Frontpage": "https://hnrss.org/frontpage",
+    "Lobste.rs": "https://lobste.rs/rss",
     "GitHub Engineering": "https://github.blog/feed/",
-    "Hacker News Tech": "https://hnrss.org/best",
-    "Gamereactor Gaming": "https://www.gamereactor.dk/rss/rss.php",
-    "Games Denmark": "https://gamesdenmark.dk/feed",
-    "Pixel.tv Gaming": "https://pixel.tv/feed/",
+    
+    # 2. Hardware, Semiconductors, CPUs, GPUs & Breakthrough Tech
+    "Tom's Hardware": "https://www.tomshardware.com/feeds/all",
+    "The Verge Tech": "https://www.theverge.com/rss/index.xml",
     "Ars Technica": "https://arstechnica.com/feed/",
+    "Engadget": "https://www.engadget.com/rss.xml",
+    "TechCrunch": "https://techcrunch.com/feed/",
+    
+    # 3. Infosec & Cybersecurity
+    "BleepingComputer": "https://www.bleepingcomputer.com/feed/",
+    
+    # 4. 3D Graphics, GameDev & WebGPU Tech
+    "80.lv Game & 3D Tech": "https://80.lv/feed/",
+    
+    # 5. Danish IT, Research & Industry
     "Version2 News": "https://www.version2.dk/rss",
     "Version2 Blogs": "https://www.version2.dk/blogs/rss",
     "Computerworld": "https://www.computerworld.dk/rss/all",
-    "CPH Post Tech": "https://cphpost.dk/category/news/technology/feed/",
     "Videnskab.dk Tech": "https://videnskab.dk/wp-json/rss/v1/feeds?topics=teknologi",
     "DR Viden": "https://www.dr.dk/nyheder/service/feeds/viden"
 }
