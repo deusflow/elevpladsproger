@@ -372,12 +372,12 @@ def is_company_in_restructuring(company_name: str, restructuring_list: Optional[
     return False
 
 
-async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: Optional[list[str]] = None, news_digest: str = "", restructuring_companies: Optional[list[str]] = None):
+async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: Optional[list[str]] = None, news_digest: str = "", restructuring_companies: Optional[list[str]] = None, radar_alerts: Optional[list[dict]] = None):
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
         logger.warning("Telegram configuration missing. Notification skipped.")
         return
 
-    if not jobs and not changed_companies and not cycle_alerts and not news_digest:
+    if not jobs and not changed_companies and not cycle_alerts and not news_digest and not radar_alerts:
         return
 
     messages: list[str] = []
@@ -386,6 +386,13 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
         for alert in cycle_alerts:
             if alert and alert.strip():
                 messages.append(alert)
+
+    # Append Lærepladsen 2.0 Radar alerts (unsolicited opportunities & contract expiries)
+    if radar_alerts:
+        import laerepladsen_radar
+        for r_alert in radar_alerts:
+            r_msg = laerepladsen_radar.format_radar_telegram_message(r_alert)
+            messages.append(r_msg)
 
     # Build job notifications in HTML format
     current_msg = "🎯 <b>Nye IT-elevpladser fundet!</b>\n\n" if jobs else ""
@@ -402,6 +409,17 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
         is_restructuring = is_company_in_restructuring(job.get('company', ''), restructuring_companies)
         restructuring_badge = "⚠️ <b>Компания проходит реструктуризацию/увольнения!</b>\n" if is_restructuring else ""
 
+        # Direct Contact and Deadline details if provided by portal (e.g. Lærepladsen)
+        contact_parts = []
+        if job.get("contact_person"):
+            contact_parts.append(f"👤 {escape_html(job['contact_person'])}")
+        if job.get("contact_phone"):
+            contact_parts.append(f"📞 <code>{escape_html(job['contact_phone'])}</code>")
+        if job.get("contact_email"):
+            contact_parts.append(f"✉️ {escape_html(job['contact_email'])}")
+        contact_line = f"☎️ <b>Kontakt:</b> {' | '.join(contact_parts)}\n" if contact_parts else ""
+        deadline_line = f"⏳ <b>Ansøgningsfrist:</b> {escape_html(job['deadline'])}\n" if job.get("deadline") else ""
+
         match_score = job.get('match_score')
         if match_score is not None:
             city = escape_html(job.get('match_city', 'Ukendt'))
@@ -411,6 +429,8 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
                        f"🏢 {company} ({source})\n"
                        f"🎓 <i>{accreditation_badge}</i>\n"
                        f"{restructuring_badge}"
+                       f"{contact_line}"
+                       f"{deadline_line}"
                        f"💡 <i>{reason}</i>\n"
                        f"🔗 <a href=\"{url}\">Ansøg her</a>\n\n")
         else:
@@ -418,6 +438,8 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
                        f"🏢 {company} ({source})\n"
                        f"🎓 <i>{accreditation_badge}</i>\n"
                        f"{restructuring_badge}"
+                       f"{contact_line}"
+                       f"{deadline_line}"
                        f"🔗 <a href=\"{url}\">Ansøg her</a>\n\n")
 
         if len(current_msg) + len(job_str) > TELEGRAM_MAX_LEN:
@@ -521,6 +543,20 @@ async def main():
         all_items = []
 
         # API Scrapers (fast concurrent HTTP requests without launching Chromium)
+        radar_alerts = []
+        try:
+            import laerepladsen_radar
+            laerepladsen_jobs, accredited_places = await laerepladsen_radar.fetch_laerepladsen_all()
+            all_items.extend(laerepladsen_jobs)
+            
+            # Detect Radar opportunities (unsolicited applications, open capacity, expiring contracts)
+            laeresteder_registry = jobs_state.get("laeresteder_registry", {})
+            radar_alerts, updated_registry = laerepladsen_radar.detect_radar_alerts(accredited_places, laeresteder_registry)
+            jobs_state["laeresteder_registry"] = updated_registry
+            jobs_state_updated = True
+        except Exception as e:
+            logger.error(f"Error executing Lærepladsen Radar: {e}")
+
         api_results = await asyncio.gather(
             scrapers.scrape_thehub(),
             scrapers.scrape_elevplads(),
@@ -594,7 +630,6 @@ async def main():
 
                 # Run all browser-based scrapers in parallel
                 tasks = [
-                    run_scraper(scrapers.scrape_laerepladsen, context),
                     run_scraper(scrapers.scrape_jobnet, context),
                     run_scraper(scrapers.scrape_jobindex, context),
                     run_scraper(scrapers.scrape_itjobbank, context),
@@ -745,11 +780,13 @@ async def main():
                 f"Проверено 8 бирж (Lærepladsen, Jobnet, Jobindex, IT-Jobbank, TheHub, Elevplads, TechJob, LinkedIn) и {total_custom_sites} карьерных сайтов.\n"
                 f"Новых elevplads за утро не найдено. Активных позиций в базе: {active_count}."
             )
-            await notify_telegram([], [], [], heartbeat_msg, [])
+            await notify_telegram([], [], [], heartbeat_msg, [], radar_alerts=radar_alerts)
             jobs_state["last_heartbeat_date"] = today_str
             jobs_state_updated = True
+        elif radar_alerts or changed_companies or cycle_alerts:
+            await notify_telegram([], changed_companies, cycle_alerts, "", active_restructuring, radar_alerts=radar_alerts)
         else:
-            await notify_telegram(new_jobs, changed_companies, cycle_alerts, "", active_restructuring)
+            await notify_telegram(new_jobs, changed_companies, cycle_alerts, "", active_restructuring, radar_alerts=radar_alerts)
         
         # Always save state to update expiration statuses even if no new jobs
         for nj in new_jobs:

@@ -127,56 +127,11 @@ def format_job(job_id: str, title: str, company: str, url: str, source: str) -> 
     }
 
 @with_error_screenshot("Lærepladsen")
-async def scrape_laerepladsen(page: Page) -> list[dict]:
-    jobs = []
-    intercepted_data = None
-    
-    async def handle_response(response):
-        nonlocal intercepted_data
-        if "api/soeg-opslag" in response.url and not "kort" in response.url:
-            try:
-                text = await response.text()
-                intercepted_data = json.loads(text)
-                logger.info("Lærepladsen API Intercepted!")
-            except Exception as e:
-                logger.error(f"Error reading Lærepladsen response: {e}")
+async def scrape_laerepladsen(page: Optional[Page] = None) -> list[dict]:
+    import laerepladsen_radar
+    active_jobs, _ = await laerepladsen_radar.fetch_laerepladsen_all()
+    return active_jobs
 
-    try:
-        logger.info("Scraping Lærepladsen...")
-        page.on("response", handle_response)
-        
-        # Load the direct search page which automatically triggers the API GET request
-        # Widened to include the entire Data- og kommunikationsuddannelsen category (3607)
-        url = "https://sr.laerepladsen.dk/soeg-opslag/0/Data-%20og%20kommunikationsuddannelsen/3607/midtjylland"
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            
-        # Wait up to 8 seconds for interception to complete
-        for _ in range(16):
-            if intercepted_data:
-                break
-            await asyncio.sleep(0.5)
-            
-        if intercepted_data and "laeresteder" in intercepted_data:
-            for company_item in intercepted_data["laeresteder"]:
-                company_name = company_item.get("navn", "Ukendt")
-                postal = str(company_item.get("postnummer", ""))
-                
-                postings = company_item.get("opslag", [])
-                for item in postings:
-                    title = item.get("titel", "") or item.get("beskrivelse", "") or "Datatekniker Elev"
-                    
-                    if is_valid_job(title, postal, company_name, location="midtjylland", bypass_geo=True):
-                        jobs.append(format_job(
-                            job_id=item.get("id"),
-                            title=title,
-                            company=company_name,
-                            url=f"https://laerepladsen.dk/elev/opslag/{item.get('id')}",
-                            source="Laerepladsen"
-                        ))
-    finally:
-        page.remove_listener("response", handle_response)
-        
-    return jobs
 
 @with_error_screenshot("Jobnet")
 async def scrape_jobnet(page: Page) -> list[dict]:
