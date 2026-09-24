@@ -18,10 +18,10 @@ PROXY_URL = os.getenv("PROXY_URL")
 # Application Specific Configuration
 DB_FILE = "jobs_db.json"
 TARGET_COMPANIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "target_companies.json")
-# Covers all Region Midtjylland postal codes (6900-6999 Ringkøbing/Skjern, 7130-7180 Hedensted/Juelsminde, 7270-7999 Herning/Holstebro/Skive/Struer/Viborg, 8000-8999 Aarhus/Silkeborg/Horsens/Randers)
+# Covers all Region Midtjylland postal codes plus key regional hubs like Billund (LEGO HQ 7190)
 TARGET_POSTAL_CODES = (
     set(map(str, range(6900, 7000))) |
-    set(map(str, range(7130, 7180))) |
+    set(map(str, range(7130, 7200))) |
     set(map(str, range(7270, 8000))) |
     set(map(str, range(8000, 9000)))
 )
@@ -99,7 +99,7 @@ MIDTJYLLAND_CITIES = [
     "odder", "hinnerup", "skanderborg", "bjerringbro", 
     "hadsten", "hammel", "lemvig", "struer", "grenaa", "ebeltoft",
     "ringkøbing", "ringkoebing", "skjern", "tarm", "videbæk", "videbaek",
-    "hedensted", "ry", "galten", "hornslet", "rønde", "roende",
+    "hedensted", "ry", "galten", "hornslet", "rønde", "roende", "billund",
     
     # Aarhus Districts & Tech Hubs
     "viby", "viby j", "brabrand", "tilst", "skejby", "risskov", 
@@ -113,14 +113,20 @@ MIDTJYLLAND_CITIES = [
 ]
 
 # Strict role keywords
-# Only Datatekniker - Programmering & Cybersecurity
+# Datatekniker - Programmering, Software & Cybersecurity
 TARGET_KEYWORDS = [
     "programmering", "cybersikkerhed", "it-sikkerhed", "cyber security",
-    "cybersecurity", "software", "developer", "udvikler", "udvikling"
+    "cybersecurity", "software", "developer", "udvikler", "udvikling",
+    "datatekniker", "fullstack", "frontend", "backend", "cloud",
+    "devops", "kodning", "data engineering", "programming"
 ]
 
-# We want to be sure it's an apprenticeship/elevplads
-ELEV_KEYWORDS = ["elev", "lærling", "apprenticeship", "trainee", "elevplads", "læreansættelse"]
+# We want to be sure it's an apprenticeship/elevplads (Danish & English variants)
+ELEV_KEYWORDS = [
+    "elev", "lærling", "apprentice", "apprenticeship", "trainee",
+    "elevplads", "læreansættelse", "voksenelev", "voksenlærling",
+    "skoleoplæring", "oplæringsvirksomhed", "datafaglig elev"
+]
 
 EXCLUDE_KEYWORDS = [
     "supporter",
@@ -138,14 +144,19 @@ EXCLUDE_KEYWORDS = [
 TARGET_ENTERPRISES = ["arla", "eurowind", "thise mejeri"]
 
 JOB_QUERIES = [
-    "datatekniker", "it-elev", "softwareudvikler", "udvikler-elev", "programmering",
-    "voksenelev", "voksenlærling", "it-lærling", "eux"
+    # Danish core technical queries
+    "datatekniker", "datateknikerelev", "it-elev", "programmørelev", "udvikler-elev",
+    "software elev", "elev programmering", "it-lærling", "voksenelev it", "elevplads it",
+    # English queries for international employers in Denmark (LEGO, Grundfos, Vestas, etc.)
+    "software apprentice", "it apprentice", "developer apprentice", "apprentice software"
 ]
 
 # Precompiled Regex Patterns for High Performance
 import re
 CITY_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, MIDTJYLLAND_CITIES)) + r')\b')
 EXCLUSION_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, EXCLUDE_KEYWORDS)) + r')\b')
+SUPPORT_EXCLUSION_PATTERN = re.compile(r'\b(?:supporter|supporttekniker|helpdesk|servicedesk)\b', re.IGNORECASE)
+HARD_EXCLUSION_PATTERN = re.compile(r'\b(?:studiejob|studentermedhjælper|ulønnet praktikant|ulønnet)\b', re.IGNORECASE)
 TARGET_KEYWORD_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, TARGET_KEYWORDS)) + r')\b')
 
 # Curated High-Value IT, Engineering, Architecture, Hardware & Danish Tech RSS Feeds

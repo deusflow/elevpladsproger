@@ -56,17 +56,32 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
                 is_in_region = True
         else:
             # Exclude explicit non-target regions (Copenhagen, Sjælland, Fyn)
-            if NON_MIDTJYLLAND_PATTERN.search(location_lower):
+            if NON_MIDTJYLLAND_PATTERN.search(location_lower) or NON_MIDTJYLLAND_PATTERN.search(title_lower):
                 return False
 
-            if config.CITY_PATTERN.search(location_lower) or "hele landet" in location_lower or "midtjylland" in location_lower or "jylland" in location_lower or "danmark" in location_lower:
+            if (config.CITY_PATTERN.search(location_lower) or
+                config.CITY_PATTERN.search(title_lower) or
+                config.CITY_PATTERN.search(company_lower) or
+                "hele landet" in location_lower or "midtjylland" in location_lower or
+                "jylland" in location_lower or "danmark" in location_lower or
+                "remote" in location_lower or "hjemmearbejde" in location_lower):
                 is_in_region = True
                 
     if not is_in_region:
         return False
             
-    # 2. Hard exclusions (pure support, helpdesk, studentermedhjælper, unpaid internships)
-    if config.EXCLUSION_PATTERN.search(title_lower):
+    # 2. Hard exclusions (studentermedhjælper, unpaid internships, studiejob)
+    if getattr(config, "HARD_EXCLUSION_PATTERN", None) and config.HARD_EXCLUSION_PATTERN.search(title_lower):
+        return False
+        
+    # Support exclusion: only exclude pure IT-supporter if there is NO mention of datatekniker/programming/software
+    if getattr(config, "SUPPORT_EXCLUSION_PATTERN", None) and config.SUPPORT_EXCLUSION_PATTERN.search(title_lower):
+        has_dev_or_datatekniker = any(
+            k in title_lower for k in ["datatekniker", "programm", "software", "udvikl", "cyber", "sikkerhed", "kode"]
+        )
+        if not has_dev_or_datatekniker:
+            return False
+    elif config.EXCLUSION_PATTERN.search(title_lower):
         return False
         
     # 3. MUST be an elevplads / apprenticeship / trainee / datatekniker
@@ -77,7 +92,17 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
     # 4. Target Enterprise or Target IT Skill or General IT Role
     is_target_enterprise = any(ent in company_lower for ent in config.TARGET_ENTERPRISES)
     has_target_skill = bool(config.TARGET_KEYWORD_PATTERN.search(title_lower))
-    is_it_role = "datatekniker" in title_lower or "it" in title_lower.split() or "it-" in title_lower or "data" in title_lower or "software" in title_lower or "programm" in title_lower or "cyber" in title_lower
+    is_it_role = (
+        "datatekniker" in title_lower or
+        "it" in title_lower.split() or
+        "it-" in title_lower or
+        "data" in title_lower or
+        "software" in title_lower or
+        "programm" in title_lower or
+        "cyber" in title_lower or
+        "apprentice" in title_lower or
+        "tech" in title_lower.split()
+    )
 
     if is_target_enterprise:
         # Require IT relevance even for target enterprises to filter out dairy, warehouse, or sales apprentices
@@ -140,7 +165,7 @@ async def scrape_laerepladsen(page: Page) -> list[dict]:
                 for item in postings:
                     title = item.get("titel", "") or item.get("beskrivelse", "") or "Datatekniker Elev"
                     
-                    if is_valid_job(title, postal, company_name):
+                    if is_valid_job(title, postal, company_name, location="midtjylland", bypass_geo=True):
                         jobs.append(format_job(
                             job_id=item.get("id"),
                             title=title,
@@ -191,12 +216,20 @@ async def scrape_jobnet(page: Page) -> list[dict]:
                 title = item.get("title", "") or item.get("occupation", "")
                 company = item.get("hiringOrgName", "Ukendt")
                 postal = str(item.get("postalCode", ""))
+                workplace = item.get("workplaceAddress", {})
+                location = ""
+                if isinstance(workplace, dict):
+                    if not postal:
+                        postal = str(workplace.get("postalCode", ""))
+                    location = str(workplace.get("city", ""))
+                if not location:
+                    location = str(item.get("city", ""))
                 
                 # Use external URL if available, otherwise construct standard Jobnet details URL
                 external_url = item.get("jobAdUrl", "")
                 url = external_url if (external_url and external_url.startswith("http")) else f"https://jobnet.dk/find-job/details/{job_id}"
 
-                if is_valid_job(title, postal, company):
+                if is_valid_job(title, postal, company, location=location):
                     seen_ids.add(job_id)
                     jobs.append(format_job(
                         job_id=job_id,

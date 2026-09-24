@@ -27,6 +27,7 @@ import scrapers
 import company_scrapers
 from config import DB_FILE, PROXY_URL, SUPABASE_URL, SUPABASE_KEY, logger
 import config
+from utils import are_jobs_duplicate
 
 FALLBACK_FILE = "jobs_db_fallback.json"
 
@@ -649,16 +650,10 @@ async def main():
         # Track currently active jobs to avoid alerting on existing active postings
         # but allow expired postings from previous cycles to be re-alerted if reopened!
         active_ids = {jid for jid, j in old_jobs.items() if j.get("status") == "active"}
+        active_jobs_list = [j for j in old_jobs.values() if j.get("status") == "active"]
         new_jobs = []
         changed_companies = []
         new_company_hashes = old_company_hashes.copy()
-        
-        # Track seen (company, title) pairs ONLY for currently ACTIVE jobs
-        seen_active_titles = set()
-        for jdata in old_jobs.values():
-            if jdata.get("status") == "active":
-                key = (jdata.get("company", "").lower().strip(), jdata.get("title", "").lower().strip())
-                seen_active_titles.add(key)
         
         for item in valid_items:
             if item.get("type") == "hash":
@@ -675,21 +670,35 @@ async def main():
                     
                 new_company_hashes[c_name] = str(c_hash)
             else:
-                dedup_key = (item.get("company", "").lower().strip(), item.get("title", "").lower().strip())
                 job_id = item["job_id"]
                 
-                # A job is new if it's not currently active and its title is not active in this run
-                if job_id not in active_ids and dedup_key not in seen_active_titles:
+                # Check if exact job_id is already active
+                if job_id in active_ids:
+                    if job_id in old_jobs:
+                        old_jobs[job_id]["last_seen_at"] = datetime.now(timezone.utc).isoformat()
+                    continue
+
+                # Cross-portal fuzzy deduplication
+                is_duplicate = False
+                for existing_job in active_jobs_list + new_jobs:
+                    if are_jobs_duplicate(item, existing_job):
+                        is_duplicate = True
+                        existing_jid = existing_job.get("job_id")
+                        if existing_jid and existing_jid in old_jobs:
+                            old_jobs[existing_jid]["last_seen_at"] = datetime.now(timezone.utc).isoformat()
+                        logger.info(
+                            f"Cross-portal duplicate suppressed: '{item.get('title')}' at '{item.get('company')}' "
+                            f"(matches existing active job: '{existing_job.get('title')}')"
+                        )
+                        break
+
+                if not is_duplicate:
                     item["discovered_at"] = datetime.now(timezone.utc).isoformat()
                     item["last_seen_at"] = datetime.now(timezone.utc).isoformat()
                     item["status"] = "active"
                     new_jobs.append(item)
                     old_jobs[job_id] = item
                     active_ids.add(job_id)
-                    seen_active_titles.add(dedup_key)
-                elif job_id in old_jobs:
-                    # Update heartbeat timestamp of active job
-                    old_jobs[job_id]["last_seen_at"] = datetime.now(timezone.utc).isoformat()
 
         logger.info(f"Discovered {len(new_jobs)} new jobs. {len(changed_companies)} companies changed structure.")
         
