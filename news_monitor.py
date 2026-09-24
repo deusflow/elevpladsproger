@@ -7,6 +7,7 @@ from typing import Any
 from datetime import datetime
 import config
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential
+from utils import extract_json_payload
 logger = logging.getLogger("elevplads_scraper")
 
 import feedparser
@@ -534,21 +535,7 @@ async def fetch_article_content(url: str) -> tuple[str, bool]:
         logger.debug(f"Could not fetch full article text for {url}: {e}")
     return "", False
 
-def extract_json_payload(text_content: str) -> dict:
-    """Extract and parse JSON object from LLM response text, stripping markdown codeblocks if present."""
-    text_content = text_content.strip()
-    if text_content.startswith("```"):
-        lines = text_content.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text_content = "\n".join(lines).strip()
-    start = text_content.find("{")
-    end = text_content.rfind("}")
-    if start != -1 and end != -1:
-        text_content = text_content[start:end+1]
-    return json.loads(text_content, strict=False)
+
 
 async def autograde_digest(digest_ru: str, snippets: str) -> bool:
     """Check for hallucinations, fabricated courses, and ungrounded claims in the news summary."""
@@ -933,7 +920,8 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
     
     # Collect all target companies (fail fast if configuration is corrupted)
     import json as json_lib
-    with open("target_companies.json", "r", encoding="utf-8") as f:
+    target_path = getattr(config, "TARGET_COMPANIES_PATH", "target_companies.json")
+    with open(target_path, "r", encoding="utf-8") as f:
         target_companies = json_lib.load(f)
     
     target_company_names = [c["name"] for c in target_companies]
@@ -1097,19 +1085,14 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
             
         restructuring_comps.extend(analysis.get("restructuring_companies", []))
 
-    # Smart seen_news: mark processed candidates as seen, but DON'T burn
-    # high-scoring articles from categories that weren't in the basket
-    basket_links = {a["link"] for a in diverse_basket}
+    # Mark all evaluated candidates as seen to prevent repeated LLM re-scoring
     for art in new_articles:
         if not any(s["link"] == art["link"] for s in seen_news):
-            # Always mark basket articles and low-score articles as seen
-            # Keep high-score articles from non-basket categories available for next run
-            if art["link"] in basket_links or art.get("interest_score", 0) <= 4:
-                seen_news.append({
-                    "link": art["link"],
-                    "title": art["title"],
-                    "timestamp": art.get("timestamp", current_time)
-                })
+            seen_news.append({
+                "link": art["link"],
+                "title": art["title"],
+                "timestamp": art.get("timestamp", current_time)
+            })
 
     # Dedup seen_news by link
     final_seen: list[dict[str, Any]] = []

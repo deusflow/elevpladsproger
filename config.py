@@ -16,8 +16,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 PROXY_URL = os.getenv("PROXY_URL")
 
 # Application Specific Configuration
-# Application Specific Configuration
 DB_FILE = "jobs_db.json"
+TARGET_COMPANIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "target_companies.json")
 # Covers all Region Midtjylland postal codes (6900-6999 Ringkøbing/Skjern, 7130-7180 Hedensted/Juelsminde, 7270-7999 Herning/Holstebro/Skive/Struer/Viborg, 8000-8999 Aarhus/Silkeborg/Horsens/Randers)
 TARGET_POSTAL_CODES = (
     set(map(str, range(6900, 7000))) |
@@ -130,8 +130,9 @@ EXCLUDE_KEYWORDS = [
     "studiejob",
     "student",
     "studentermedhjælper",
-    "intern",
-    "internship"
+    "internship",
+    "ulønnet praktikant",
+    "ulønnet"
 ]
 
 TARGET_ENTERPRISES = ["arla", "eurowind", "thise mejeri"]

@@ -6,9 +6,20 @@ import html as html_lib
 import re
 import httpx
 from datetime import datetime, timezone
-from patchright.async_api import async_playwright
+try:
+    from patchright.async_api import async_playwright
+except ImportError:
+    try:
+        from playwright.async_api import async_playwright  # type: ignore
+    except ImportError:
+        async_playwright = None  # type: ignore
+
 import random
-from playwright_stealth import stealth_async
+try:
+    from playwright_stealth import stealth_async
+except ImportError:
+    async def stealth_async(page): pass
+
 import company_validator
 import proff_scraper
 
@@ -348,6 +359,18 @@ async def _send_telegram_message(client: httpx.AsyncClient, text: str, parse_mod
     return await _send_single_telegram_message(client, text, parse_mode=parse_mode)
 
 
+def is_company_in_restructuring(company_name: str, restructuring_list: Optional[list[str]]) -> bool:
+    """Check if company_name matches any company in restructuring_list via fuzzy/substring comparison."""
+    if not restructuring_list or not company_name:
+        return False
+    company_clean = re.sub(r'\b(a/s|aps|a/s\.|aps\.|group|danmark|denmark|holding|nordic|ab)\b', '', company_name.lower()).strip()
+    for rc in restructuring_list:
+        rc_clean = re.sub(r'\b(a/s|aps|a/s\.|aps\.|group|danmark|denmark|holding|nordic|ab)\b', '', rc.lower()).strip()
+        if len(rc_clean) >= 3 and (rc_clean in company_clean or company_clean in rc_clean):
+            return True
+    return False
+
+
 async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: Optional[list[str]] = None, news_digest: str = "", restructuring_companies: Optional[list[str]] = None):
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
         logger.warning("Telegram configuration missing. Notification skipped.")
@@ -371,11 +394,11 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
         source = escape_html(job['source'])
         url = job['url']
 
-        # Check validation
-        is_approved = await company_validator.check_accreditation(job['company'])
+        # Check validation (pre-computed prior to notifications)
+        is_approved = job.get("is_approved", False)
         accreditation_badge = "✅ Verificeret IT-virksomhed (CVR)" if is_approved else "⚠️ Ukendt CVR-status"
 
-        is_restructuring = restructuring_companies and job['company'] in restructuring_companies
+        is_restructuring = is_company_in_restructuring(job.get('company', ''), restructuring_companies)
         restructuring_badge = "⚠️ <b>Компания проходит реструктуризацию/увольнения!</b>\n" if is_restructuring else ""
 
         match_score = job.get('match_score')
@@ -465,16 +488,15 @@ async def main():
     now = datetime.now(timezone.utc)
     now_ts = now.timestamp()  # BUG-4 fix: numeric timestamp for layoff comparisons
 
-    state_key = "jobs_state" if mode == 'jobs' else ("news_state" if mode == 'news' else "scraper_state")
-    state = await load_state(state_key=state_key)
-    state_updated = False
-    
-    # Synchronize persistent CVR validation cache
-    company_validator.set_validation_cache(state.get("cvr_cache", {}))
-    
     if mode in ['jobs', 'all']:
-        old_jobs_list = state.get("jobs", [])
-        old_company_hashes = state.get("company_hashes", {})
+        jobs_state = await load_state(state_key="jobs_state")
+        jobs_state_updated = False
+        
+        # Synchronize persistent CVR validation cache
+        company_validator.set_validation_cache(jobs_state.get("cvr_cache", {}))
+        
+        old_jobs_list = jobs_state.get("jobs", [])
+        old_company_hashes = jobs_state.get("company_hashes", {})
         
         old_jobs = {item["job_id"]: item for item in old_jobs_list if isinstance(item, dict) and "job_id" in item}
         
@@ -544,28 +566,28 @@ async def main():
                         await page.close()
 
                 # Dynamic discovery on Proff (run once a week, or on empty state)
-                last_proff_scrape = state.get("last_proff_scrape")
+                last_proff_scrape = jobs_state.get("last_proff_scrape")
                 now_dt = datetime.now(timezone.utc)
                 if not last_proff_scrape or (now_dt - datetime.fromisoformat(last_proff_scrape)).days >= 7:
                     logger.info("Running weekly dynamic company discovery via Proff.dk...")
                     dynamic_companies = await proff_scraper.discover_it_companies(context)
                     if dynamic_companies:
-                        existing_dynamic = state.get("dynamic_companies", [])
+                        existing_dynamic = jobs_state.get("dynamic_companies", [])
                         existing_names = {c["name"].lower() for c in existing_dynamic}
                         for dc in dynamic_companies:
                             if dc["name"].lower() not in existing_names:
                                 existing_dynamic.append(dc)
-                        state["dynamic_companies"] = existing_dynamic
-                        state["last_proff_scrape"] = now_dt.isoformat()
-                        await save_state(state, state_key=state_key)
+                        jobs_state["dynamic_companies"] = existing_dynamic
+                        jobs_state["last_proff_scrape"] = now_dt.isoformat()
+                        await save_state(jobs_state, state_key="jobs_state")
                     else:
                         # If Proff discovery yielded 0 or failed, back off for 24h instead of retrying on every subsequent run
                         from datetime import timedelta
-                        state["last_proff_scrape"] = (now_dt - timedelta(days=6)).isoformat()
-                        await save_state(state, state_key=state_key)
+                        jobs_state["last_proff_scrape"] = (now_dt - timedelta(days=6)).isoformat()
+                        await save_state(jobs_state, state_key="jobs_state")
                 
                 dynamic_companies = [
-                    c for c in state.get("dynamic_companies", [])
+                    c for c in jobs_state.get("dynamic_companies", [])
                     if c.get("url") and c["url"].strip().startswith("http")
                 ]
 
@@ -588,14 +610,20 @@ async def main():
             finally:
                 await browser.close()
 
+        # Prune dynamic companies that failed 5 times in a row and limit to 50 (BUG-5)
+        pruned_dynamic = [c for c in dynamic_companies if c.get("fail_count", 0) < 5][:50]
+        if pruned_dynamic != jobs_state.get("dynamic_companies", []):
+            jobs_state["dynamic_companies"] = pruned_dynamic
+            jobs_state_updated = True
+
         # Separate scraper errors from valid items (Jobs vs Hashes)
         scraper_errors = [item for item in all_items if item.get("type") == "scraper_error"]
         valid_items = [item for item in all_items if item.get("type") != "scraper_error"]
         
         # Track Scraper Health
         KNOWN_JOB_SOURCES = ["TheHub", "Elevplads", "Laerepladsen", "Jobnet", "Jobindex", "IT-Jobbank", "TechJob", "LinkedIn"]
-        scraper_failures = state.get("scraper_failures", {})
-        notified_scraper_failures = state.get("notified_scraper_failures", {})
+        scraper_failures = jobs_state.get("scraper_failures", {})
+        notified_scraper_failures = jobs_state.get("notified_scraper_failures", {})
         errors_by_source = {err["source"]: err.get("error", "Unknown error") for err in scraper_errors}
 
         for src in KNOWN_JOB_SOURCES:
@@ -606,17 +634,17 @@ async def main():
                     alert_msg = f"⚠️ <b>Сбой источника вакансий</b>\nСкрейпер <code>{escape_html(src)}</code> падает уже 3 запуска подряд:\n<code>{escape_html(err_text)}</code>"
                     await notify_telegram([], [], [], alert_msg, [])
                     notified_scraper_failures[src] = True
-                    state_updated = True
+                    jobs_state_updated = True
             else:
                 if scraper_failures.get(src, 0) > 0 and notified_scraper_failures.get(src):
                     alert_msg = f"✅ <b>Источник вакансий восстановился</b>\nСкрейпер <code>{escape_html(src)}</code> снова успешно собирает данные."
                     await notify_telegram([], [], [], alert_msg, [])
                     notified_scraper_failures[src] = False
-                    state_updated = True
+                    jobs_state_updated = True
                 scraper_failures[src] = 0
 
-        state["scraper_failures"] = scraper_failures
-        state["notified_scraper_failures"] = notified_scraper_failures
+        jobs_state["scraper_failures"] = scraper_failures
+        jobs_state["notified_scraper_failures"] = notified_scraper_failures
 
         # Track currently active jobs to avoid alerting on existing active postings
         # but allow expired postings from previous cycles to be re-alerted if reopened!
@@ -668,32 +696,38 @@ async def main():
         if new_jobs:
             import ai_scorer
             await ai_scorer.enrich_jobs_with_ai(new_jobs)
+            for job in new_jobs:
+                try:
+                    job["is_approved"] = await company_validator.check_accreditation(job["company"])
+                except Exception as e:
+                    logger.warning(f"Error checking accreditation for {job.get('company')}: {e}")
+                    job["is_approved"] = False
             
         import cycle_predictor
-        cycle_alerts = cycle_predictor.analyze_and_predict(state)
+        cycle_alerts = cycle_predictor.analyze_and_predict(jobs_state)
         
-        active_restructuring = state.get("restructuring_companies", [])
-        if mode == 'jobs':
-            try:
-                news_state = await load_state(state_key="news_state")
-                news_restructuring = news_state.get("restructuring_companies", [])
-                if news_restructuring:
-                    merged_restructuring = list(set(active_restructuring + news_restructuring))
-                    if merged_restructuring != active_restructuring:
-                        active_restructuring = merged_restructuring
-                        state["restructuring_companies"] = active_restructuring
-                        state_updated = True
-            except Exception as e:
-                logger.warning(f"Could not load restructuring companies from news_state: {e}")
+        active_restructuring = jobs_state.get("restructuring_companies", [])
+        try:
+            news_state_ref = await load_state(state_key="news_state")
+            news_restructuring = news_state_ref.get("restructuring_companies", [])
+            if news_restructuring:
+                merged_restructuring = list(set(active_restructuring + news_restructuring))
+                if merged_restructuring != active_restructuring:
+                    active_restructuring = merged_restructuring
+                    jobs_state["restructuring_companies"] = active_restructuring
+                    jobs_state_updated = True
+        except Exception as e:
+            logger.warning(f"Could not load restructuring companies from news_state: {e}")
         
         # Check if we should send a reassuring daily morning heartbeat when 0 new jobs found
         today_str = now.strftime("%Y-%m-%d")
-        last_heartbeat = state.get("last_heartbeat_date")
+        last_heartbeat = jobs_state.get("last_heartbeat_date")
         if not new_jobs and not changed_companies and not cycle_alerts and now.hour < 12 and last_heartbeat != today_str:
             active_count = len([j for j in old_jobs.values() if j.get("status") == "active"])
             total_custom_sites = len(dynamic_companies)
             try:
-                with open("target_companies.json", "r", encoding="utf-8") as f:
+                target_path = getattr(config, "TARGET_COMPANIES_PATH", "target_companies.json")
+                with open(target_path, "r", encoding="utf-8") as f:
                     total_custom_sites += len(json.load(f))
             except Exception:
                 total_custom_sites = 58
@@ -703,8 +737,8 @@ async def main():
                 f"Новых elevplads за утро не найдено. Активных позиций в базе: {active_count}."
             )
             await notify_telegram([], [], [], heartbeat_msg, [])
-            state["last_heartbeat_date"] = today_str
-            state_updated = True
+            jobs_state["last_heartbeat_date"] = today_str
+            jobs_state_updated = True
         else:
             await notify_telegram(new_jobs, changed_companies, cycle_alerts, "", active_restructuring)
         
@@ -712,65 +746,77 @@ async def main():
         for nj in new_jobs:
             nj["status"] = "active"
             old_jobs[nj["job_id"]] = nj
-        state["jobs"] = list(old_jobs.values())
-        state_updated = True
+        jobs_state["jobs"] = list(old_jobs.values())
+        jobs_state_updated = True
             
         if new_company_hashes != old_company_hashes:
-            state["company_hashes"] = new_company_hashes
-            state_updated = True
+            jobs_state["company_hashes"] = new_company_hashes
+            jobs_state_updated = True
+
+        # Persist updated CVR validation cache if changed
+        new_cvr_cache = company_validator.get_validation_cache()
+        if new_cvr_cache != jobs_state.get("cvr_cache"):
+            jobs_state["cvr_cache"] = new_cvr_cache
+            jobs_state_updated = True
+
+        if jobs_state_updated:
+            await save_state(jobs_state, state_key="jobs_state")
 
     if mode in ['news', 'all']:
+        news_state = await load_state(state_key="news_state")
+        news_state_updated = False
         import news_monitor
         force_post_env = os.getenv("FORCE_POST", "false").lower() == "true"
-        news_result = await news_monitor.process_news(state, force_post=force_post_env)
+        news_result = await news_monitor.process_news(news_state, force_post=force_post_env)
         digests_ru = news_result.get("digests_ru", [])
         restructuring_companies = news_result.get("restructuring_companies", [])
         if "seen_news" in news_result:
-            state_updated = True
-            state["seen_news"] = news_result["seen_news"]
+            news_state_updated = True
+            news_state["seen_news"] = news_result["seen_news"]
             
         if restructuring_companies:
-            state["restructuring_companies"] = list(set(state.get("restructuring_companies", []) + restructuring_companies))
+            news_state["restructuring_companies"] = list(set(news_state.get("restructuring_companies", []) + restructuring_companies))
+            news_state_updated = True
             
         posted_news_titles = news_result.get("posted_news_titles", [])
         selected_tip_term = news_result.get("selected_tip_term", "")
         
         if digests_ru and selected_tip_term:
-            state_updated = True
-            state["tip_history"] = state.get("tip_history", {})
-            state["tip_history"][selected_tip_term] = datetime.now(timezone.utc).date().isoformat()
+            news_state_updated = True
+            news_state["tip_history"] = news_state.get("tip_history", {})
+            news_state["tip_history"][selected_tip_term] = datetime.now(timezone.utc).date().isoformat()
             
         if posted_news_titles:
-            state_updated = True
-            state["posted_news"] = state.get("posted_news", []) + posted_news_titles
-            state["posted_news"] = state["posted_news"][-30:] # prevent infinite growth
+            news_state_updated = True
+            news_state["posted_news"] = news_state.get("posted_news", []) + posted_news_titles
+            news_state["posted_news"] = news_state["posted_news"][-30:] # prevent infinite growth
 
         # Persist structured posted_news_records for cross-lingual dedup
         new_records = news_result.get("posted_news_records", [])
         if new_records:
-            state_updated = True
-            state["posted_news_records"] = new_records
+            news_state_updated = True
+            news_state["posted_news_records"] = new_records
 
         # 1. Feed Health-Check Alerts
-        feed_failures = state.get("feed_failures", {})
-        notified_feed_failures = state.get("notified_feed_failures", {})
+        feed_failures = news_state.get("feed_failures", {})
+        notified_feed_failures = news_state.get("notified_feed_failures", {})
         for source, count in feed_failures.items():
             if count >= 3 and not notified_feed_failures.get(source):
                 alert_msg = f"⚠️ <b>Сбой RSS фида</b>\nИсточник <code>{escape_html(source)}</code> не отвечает уже 3 запуска подряд."
                 await notify_telegram([], [], [], alert_msg, [])
                 notified_feed_failures[source] = True
-                state_updated = True
+                news_state_updated = True
             elif count == 0 and notified_feed_failures.get(source):
                 alert_msg = f"✅ <b>RSS фид восстановился</b>\nИсточник <code>{escape_html(source)}</code> снова работает."
                 await notify_telegram([], [], [], alert_msg, [])
                 notified_feed_failures[source] = False
-                state_updated = True
-        if "notified_feed_failures" not in state or state["notified_feed_failures"] != notified_feed_failures:
-            state["notified_feed_failures"] = notified_feed_failures
-            state_updated = True
+                news_state_updated = True
+        if "notified_feed_failures" not in news_state or news_state["notified_feed_failures"] != notified_feed_failures:
+            news_state["notified_feed_failures"] = notified_feed_failures
+            news_state_updated = True
 
         # 2. Layoffs Alerts Routing (out-of-queue)
-        recent_layoff_alerts = state.get("recent_layoff_alerts", {})
+        recent_layoff_alerts = news_state.get("recent_layoff_alerts", {})
         for comp in restructuring_companies:
             last_alerted = recent_layoff_alerts.get(comp, 0)
             if now_ts - last_alerted > 7 * 24 * 3600:  # 7 days deduplication (both are numeric timestamps)
@@ -778,24 +824,18 @@ async def main():
                 alert_msg = f"🚨 <b>ВНИМАНИЕ: СОКРАЩЕНИЯ</b>\nЗамечены новости о сокращениях/реструктуризации в компании <b>{comp_escaped}</b>!"
                 await notify_telegram([], [], [], alert_msg, [])
                 recent_layoff_alerts[comp] = now_ts
-                state_updated = True
-        if "recent_layoff_alerts" not in state or state["recent_layoff_alerts"] != recent_layoff_alerts:
-            state["recent_layoff_alerts"] = recent_layoff_alerts
-            state_updated = True
+                news_state_updated = True
+        if "recent_layoff_alerts" not in news_state or news_state["recent_layoff_alerts"] != recent_layoff_alerts:
+            news_state["recent_layoff_alerts"] = recent_layoff_alerts
+            news_state_updated = True
 
-        active_restructuring = state.get("restructuring_companies", [])
+        active_restructuring = news_state.get("restructuring_companies", [])
         for digest in digests_ru:
             if digest:
                 await notify_telegram([], [], [], digest, active_restructuring)
-            
-    # Persist updated CVR validation cache if changed
-    new_cvr_cache = company_validator.get_validation_cache()
-    if new_cvr_cache != state.get("cvr_cache"):
-        state["cvr_cache"] = new_cvr_cache
-        state_updated = True
 
-    if state_updated:
-        await save_state(state, state_key=state_key)
+        if news_state_updated:
+            await save_state(news_state, state_key="news_state")
 
 if __name__ == "__main__":
     asyncio.run(main())

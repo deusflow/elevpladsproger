@@ -33,7 +33,7 @@ def _get_known_target_companies() -> set[str]:
 
     companies = set()
     try:
-        target_path = os.path.join(os.path.dirname(__file__), "target_companies.json")
+        target_path = getattr(config, "TARGET_COMPANIES_PATH", os.path.join(os.path.dirname(__file__), "target_companies.json"))
         if os.path.exists(target_path):
             with open(target_path, "r", encoding="utf-8") as f:
                 data = json.load(f)

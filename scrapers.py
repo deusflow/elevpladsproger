@@ -488,7 +488,7 @@ async def scrape_techjob(page: Page) -> list[dict]:
     logger.info("Scraping TechJob.dk...")
     for q in ["elev", "lærling", "datatekniker", "softwareudvikler"]:
         try:
-            url = f"https://techjob.dk/search?q={urllib.parse.quote(q)}"
+            url = f"https://techjob.dk/sog?query={urllib.parse.quote(q)}"
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             
             try:

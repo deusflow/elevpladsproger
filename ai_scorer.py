@@ -7,21 +7,7 @@ from typing import Any
 
 logger = logging.getLogger("elevplads_scraper")
 
-def extract_json_payload(text_content: str) -> dict:
-    """Extract and parse JSON object from LLM response text, stripping markdown codeblocks if present."""
-    text_content = text_content.strip()
-    if text_content.startswith("```"):
-        lines = text_content.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text_content = "\n".join(lines).strip()
-    start = text_content.find("{")
-    end = text_content.rfind("}")
-    if start != -1 and end != -1:
-        text_content = text_content[start:end+1]
-    return json.loads(text_content, strict=False)
+from utils import extract_json_payload
 
 async def fetch_job_text(url: str) -> str:
     """Fetch job URL and extract text using regex, skipping JS/CSS."""
@@ -95,7 +81,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
                     "parts": [{"text": prompt}]
                 }],
                 "generationConfig": {
-                    "response_mime_type": "application/json"
+                    "responseMimeType": "application/json"
                 }
             }
             try:
@@ -139,7 +125,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
             except Exception as e:
                 logger.error(f"Groq API exception during scoring ({model_id}): {e}")
         
-        return {}
+    return {}
     
 async def enrich_jobs_with_ai(new_jobs: list[dict]):
     """Fetch text and score each new job asynchronously."""

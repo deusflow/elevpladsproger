@@ -5,6 +5,7 @@ import os
 import re
 import hashlib
 from typing import Optional, Any
+from datetime import datetime, timezone
 import httpx
 try:
     from patchright.async_api import BrowserContext, Page
@@ -275,8 +276,6 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
                     url=url,
                     source="UniversalCrawler"
                 ))
-            else:
-                # Return hash object for state diffing
                 jobs.append({
                     "type": "hash",
                     "company": name,
@@ -284,8 +283,11 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
                     "hash": str(structural_hash),
                     "llm_verified": llm_success
                 })
+            company["fail_count"] = 0
+            company["last_success"] = datetime.now(timezone.utc).isoformat()
         except Exception as e:
             logger.error(f"Failed to crawl {name} ({url}): {e}")
+            company["fail_count"] = company.get("fail_count", 0) + 1
             try:
                 os.makedirs("screenshots", exist_ok=True)
                 safe_name = name.replace(' ', '_').lower()
@@ -299,9 +301,9 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
             
         return jobs
 
-async def scrape_custom_companies(context: BrowserContext, dynamic_companies: Optional[list[dict]] = None) -> list[dict]:
     # Fail fast if target_companies.json is missing or corrupted
-    with open("target_companies.json", "r", encoding="utf-8") as f:
+    target_path = getattr(config, "TARGET_COMPANIES_PATH", "target_companies.json")
+    with open(target_path, "r", encoding="utf-8") as f:
         companies = json.load(f)
 
     if dynamic_companies:
