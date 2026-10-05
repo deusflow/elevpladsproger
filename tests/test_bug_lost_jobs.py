@@ -18,6 +18,7 @@ class TestBugLostJobs(unittest.TestCase):
         initial_state = {
             "jobs": [],
             "company_hashes": {"Horsens Kommune": "old_hash_123"},
+            "company_snapshots": {"Horsens Kommune": [{"text": "Gammel stilling", "url": "https://portal.signatur.dk/old"}]},
             "_version": 1
         }
 
@@ -34,6 +35,10 @@ class TestBugLostJobs(unittest.TestCase):
             "company": "Horsens Kommune",
             "url": "https://portal.signatur.dk/ExtJobs/DefaultHosting/JobList.aspx?clientid=2289",
             "hash": "new_hash_456",
+            "links": [
+                {"text": "Gammel stilling", "url": "https://portal.signatur.dk/old"},
+                {"text": "Datateknikerelev i Horsens", "url": "https://portal.signatur.dk/job/datatekniker"}
+            ],
             "llm_verified": False
         }
 

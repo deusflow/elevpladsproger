@@ -146,7 +146,7 @@ async def _do_scrape_company(page: Page, url: str):
     response = await page.goto(url, wait_until="domcontentloaded", timeout=25000)
     if response and response.status in [404, 410]:
         logger.warning(f"Company career page permanently unavailable ({response.status}) at {url}")
-        return [], "", ""
+        return [], "", "", []
     if response and response.status >= 400:
         raise Exception(f"HTTP {response.status} returned for {url}")
     await page.wait_for_load_state("domcontentloaded")
@@ -158,6 +158,21 @@ async def _do_scrape_company(page: Page, url: str):
     await page.evaluate("""() => {
         const noisySelectors = ['header', 'footer', 'nav', 'aside', '.cookie-banner', '#cookie-consent'];
         document.querySelectorAll(noisySelectors.join(',')).forEach(el => el.remove());
+    }""")
+
+    # Extract clean content links snapshot for change detection
+    extracted_links = await page.evaluate("""() => {
+        const links = [];
+        const seen = new Set();
+        document.querySelectorAll('a').forEach(a => {
+            const text = (a.innerText || a.textContent || '').replace(/\\s+/g, ' ').trim();
+            const href = a.href || '';
+            if (text.length > 3 && href.startsWith('http') && !seen.has(href)) {
+                seen.add(href);
+                links.push({text: text, url: href});
+            }
+        });
+        return links;
     }""")
             
     # Target content area or fallback to main/article/body
@@ -180,7 +195,7 @@ async def _do_scrape_company(page: Page, url: str):
         
     structural_hash = hashlib.md5(clean_fingerprint.encode("utf-8")).hexdigest()
     
-    return found_jobs, body_text, structural_hash
+    return found_jobs, body_text, structural_hash, extracted_links
 
 
 async def try_teamtailor_api(company_name: str, base_url: str) -> Optional[list[dict]]:
@@ -202,10 +217,12 @@ async def try_teamtailor_api(company_name: str, base_url: str) -> Optional[list[
                     data = resp.json()
                     items = data.get("items", [])
                     jobs = []
+                    links = []
                     for item in items:
                         title = item.get("title", "").strip()
                         link = item.get("url", "").strip()
                         if title and link:
+                            links.append({"text": title, "url": link})
                             if is_valid_job(title, "", company_name, "", bypass_geo=True):
                                 job_id = hashlib.md5(f"{company_name}_{title}_{link}".encode()).hexdigest()
                                 jobs.append(format_job(
@@ -220,7 +237,8 @@ async def try_teamtailor_api(company_name: str, base_url: str) -> Optional[list[
                         "type": "hash",
                         "company": company_name,
                         "url": base_url,
-                        "hash": str(structural_hash)
+                        "hash": str(structural_hash),
+                        "links": links
                     })
                     if any(j.get("type") != "hash" for j in jobs):
                         logger.info(f"Teamtailor API found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")
@@ -266,6 +284,7 @@ async def try_emply_api(company_name: str, base_url: str) -> Optional[list[dict]
                 if api_resp.status_code == 200:
                     vacancies = api_resp.json().get("vacancies", [])
                     jobs = []
+                    links = []
                     for v in vacancies:
                         title = v.get("title", "").strip()
                         short_id = v.get("shortId") or v.get("id")
@@ -277,6 +296,9 @@ async def try_emply_api(company_name: str, base_url: str) -> Optional[list[dict]
                             job_url = f"{p.scheme}://{p.netloc}/ad/{title_slug}/{short_id}"
                         else:
                             job_url = base_url
+
+                        if title:
+                            links.append({"text": title, "url": job_url})
 
                         if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
                             job_id = hashlib.md5(f"{company_name}_{title}_{job_url}".encode()).hexdigest()
@@ -293,7 +315,8 @@ async def try_emply_api(company_name: str, base_url: str) -> Optional[list[dict]
                         "type": "hash",
                         "company": company_name,
                         "url": base_url,
-                        "hash": str(structural_hash)
+                        "hash": str(structural_hash),
+                        "links": links
                     })
                     if any(j.get("type") != "hash" for j in jobs):
                         logger.info(f"Emply API found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")
@@ -304,10 +327,14 @@ async def try_emply_api(company_name: str, base_url: str) -> Optional[list[dict]
             if dycon_match:
                 vacancies = json.loads(dycon_match.group(1))
                 jobs = []
+                links = []
                 for v in vacancies:
                     title = v.get("title", "").strip()
                     link = v.get("link") or v.get("url") or ""
                     job_url = urljoin(base_url, link) if link else base_url
+                    if title:
+                        links.append({"text": title, "url": job_url})
+
                     loc = v.get("location")
                     postal = str(loc.get("zip", "")) if isinstance(loc, dict) else ""
                     if title and is_valid_job(title, postal, company_name, "", bypass_geo=True):
@@ -325,7 +352,8 @@ async def try_emply_api(company_name: str, base_url: str) -> Optional[list[dict]
                     "type": "hash",
                     "company": company_name,
                     "url": base_url,
-                    "hash": str(structural_hash)
+                    "hash": str(structural_hash),
+                    "links": links
                 })
                 if any(j.get("type") != "hash" for j in jobs):
                     logger.info(f"Emply Data found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")
@@ -359,10 +387,13 @@ async def try_workday_api(company_name: str, base_url: str) -> Optional[list[dic
                 data = resp.json()
                 postings = data.get("jobPostings", [])
                 jobs = []
+                links = []
                 for p in postings:
                     title = p.get("title", "").strip()
                     ext_path = p.get("externalPath", "")
                     job_url = f"https://lego.wd103.myworkdayjobs.com/LEGO_External{ext_path}" if ext_path else base_url
+                    if title:
+                        links.append({"text": title, "url": job_url})
                     if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
                         job_id = hashlib.md5(f"{company_name}_{title}_{job_url}".encode()).hexdigest()
                         jobs.append(format_job(
@@ -377,7 +408,8 @@ async def try_workday_api(company_name: str, base_url: str) -> Optional[list[dic
                     "type": "hash",
                     "company": company_name,
                     "url": base_url,
-                    "hash": str(structural_hash)
+                    "hash": str(structural_hash),
+                    "links": links
                 })
                 if any(j.get("type") != "hash" for j in jobs):
                     logger.info(f"Workday API found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")
@@ -404,6 +436,7 @@ async def try_signatur_api(company_name: str, base_url: str) -> Optional[list[di
             soup = BeautifulSoup(resp.text, "html.parser")
             a_tags = soup.find_all("a", href=re.compile(r"JobDetails\.aspx|JobProfile\.aspx", re.I))
             jobs = []
+            links = []
             seen_links = set()
             for a in a_tags:
                 href = a.get("href", "")
@@ -415,6 +448,9 @@ async def try_signatur_api(company_name: str, base_url: str) -> Optional[list[di
                 text = a.get_text(" ", strip=True)
                 title_match = re.search(r"Stilling:\s*([^.]+?\.)", text)
                 title = title_match.group(1).rstrip(".") if title_match else text
+
+                if title:
+                    links.append({"text": title, "url": full_url})
 
                 if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
                     job_id = hashlib.md5(f"{company_name}_{title}_{full_url}".encode()).hexdigest()
@@ -431,7 +467,8 @@ async def try_signatur_api(company_name: str, base_url: str) -> Optional[list[di
                 "type": "hash",
                 "company": company_name,
                 "url": base_url,
-                "hash": str(structural_hash)
+                "hash": str(structural_hash),
+                "links": links
             })
             if any(j.get("type") != "hash" for j in jobs):
                 logger.info(f"Signatur direct scraper found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")
@@ -458,6 +495,7 @@ async def try_talentsoft_api(company_name: str, base_url: str) -> Optional[list[
             soup = BeautifulSoup(resp.text, "html.parser")
             a_tags = soup.find_all("a", href=lambda h: h and "job-" in h)
             jobs = []
+            links = []
             seen_links = set()
             for a in a_tags:
                 href = a.get("href", "")
@@ -466,6 +504,8 @@ async def try_talentsoft_api(company_name: str, base_url: str) -> Optional[list[
                     continue
                 seen_links.add(full_url)
                 title = a.get_text(" ", strip=True)
+                if title:
+                    links.append({"text": title, "url": full_url})
                 if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
                     job_id = hashlib.md5(f"{company_name}_{title}_{full_url}".encode()).hexdigest()
                     jobs.append(format_job(
@@ -481,7 +521,8 @@ async def try_talentsoft_api(company_name: str, base_url: str) -> Optional[list[
                 "type": "hash",
                 "company": company_name,
                 "url": base_url,
-                "hash": str(structural_hash)
+                "hash": str(structural_hash),
+                "links": links
             })
             if any(j.get("type") != "hash" for j in jobs):
                 logger.info(f"TalentSoft direct scraper found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")
@@ -517,7 +558,7 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
         await stealth_async(page)
         jobs = []
         try:
-            found_jobs, body_text, structural_hash = await _do_scrape_company(page, url)
+            found_jobs, body_text, structural_hash, extracted_links = await _do_scrape_company(page, url)
             
             # If LLM API key is present, try LLM extraction as high-precision fallback
             llm_jobs, llm_success = await extract_jobs_with_groq(name, url, body_text)
@@ -559,6 +600,7 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
                 "company": name,
                 "url": url,
                 "hash": str(structural_hash),
+                "links": extracted_links,
                 "llm_verified": llm_success
             })
             company["fail_count"] = 0

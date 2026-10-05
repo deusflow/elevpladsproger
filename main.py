@@ -35,7 +35,7 @@ FALLBACK_FILE = "jobs_db_fallback.json"
 TELEGRAM_MAX_LEN = 4000
 
 async def load_state(state_key: str = "jobs_state") -> dict[str, Any]:
-    state: dict[str, Any] = {"jobs": [], "company_hashes": {}} if state_key == "jobs_state" else {"seen_news": [], "posted_news": []}
+    state: dict[str, Any] = {"jobs": [], "company_hashes": {}, "company_snapshots": {}} if state_key == "jobs_state" else {"seen_news": [], "posted_news": []}
     
     fallback_file = f"{state_key}_fallback.json"
     legacy_fallback = FALLBACK_FILE
@@ -85,6 +85,7 @@ async def load_state(state_key: str = "jobs_state") -> dict[str, Any]:
                                             state = {
                                                 "jobs": legacy_loaded.get("jobs", []),
                                                 "company_hashes": legacy_loaded.get("company_hashes", {}),
+                                                "company_snapshots": legacy_loaded.get("company_snapshots", {}),
                                                 "cvr_cache": legacy_loaded.get("cvr_cache", {}),
                                                 "dynamic_companies": legacy_loaded.get("dynamic_companies", []),
                                                 "predictions_sent": legacy_loaded.get("predictions_sent", {}),
@@ -119,6 +120,7 @@ async def load_state(state_key: str = "jobs_state") -> dict[str, Any]:
                                     if fj.get("job_id") not in existing_job_ids and fj.get("url") not in existing_urls:
                                         jobs_list.append(fj)
                                 state.setdefault("company_hashes", {}).update(fallback_state.get("company_hashes", {}))
+                                state.setdefault("company_snapshots", {}).update(fallback_state.get("company_snapshots", {}))
                             elif state_key == "news_state":
                                 existing_links = {n["link"] for n in state.get("seen_news", []) if "link" in n}
                                 seen_list = state.setdefault("seen_news", [])
@@ -372,6 +374,15 @@ def is_company_in_restructuring(company_name: str, restructuring_list: Optional[
     return False
 
 
+CHANGE_KEYWORDS = ("elev", "lærling", "datatekniker", "it-", "software", "praktik")
+
+
+def is_relevant_change_link(text: str, url: str) -> bool:
+    """Check if a new career page link matches IT / apprenticeship keywords."""
+    content = f"{text} {url}".lower()
+    return any(kw in content for kw in CHANGE_KEYWORDS)
+
+
 async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: Optional[list[str]] = None, news_digest: str = "", restructuring_companies: Optional[list[str]] = None, radar_alerts: Optional[list[dict]] = None):
     if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
         logger.warning("Telegram configuration missing. Notification skipped.")
@@ -468,21 +479,30 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
                 messages.append(draft_msg)
 
     # Build company change notifications in HTML format
-    current_msg = "⚠️ <b>Ændringer opdaget på karrieresider</b>\n\n" if changed_companies else ""
     if changed_companies:
-        current_msg += "Strukturen på følgende sider er ændret. Der er måske en skjult elevplads:\n\n"
+        current_msg = "⚠️ <b>Mulige nye elevpladser opdaget på karrieresider</b>\n\n"
         for comp in changed_companies:
-            company = escape_html(comp['company'])
-            url = comp['url']
-            comp_str = f"🏢 <b>{company}</b>\n🔗 <a href=\"{url}\">Tjek manuelt</a>\n\n"
+            company = escape_html(comp.get('company', 'Ukendt'))
+            url = comp.get('url', '')
+            new_links = comp.get("new_links", [])
+            comp_str = f"🏢 <b>{company}</b>\n"
+            if new_links:
+                for lk in new_links:
+                    lk_title = escape_html(lk.get("text") or "Ny stilling")
+                    lk_url = lk.get("url") or url
+                    comp_str += f"• <a href=\"{lk_url}\">{lk_title}</a>\n"
+                comp_str += "\n"
+            else:
+                comp_str += f"🔗 <a href=\"{url}\">Tjek karriereside</a>\n\n"
+
             if len(current_msg) + len(comp_str) > TELEGRAM_MAX_LEN:
                 messages.append(current_msg)
                 current_msg = comp_str
             else:
                 current_msg += comp_str
 
-    if current_msg and changed_companies:
-        messages.append(current_msg)
+        if current_msg:
+            messages.append(current_msg)
 
     # Guard: skip if nothing to send
     has_news = news_digest and len(news_digest.strip()) > 10
@@ -520,6 +540,7 @@ async def main():
         
         old_jobs_list = jobs_state.get("jobs", [])
         old_company_hashes = jobs_state.get("company_hashes", {})
+        old_company_snapshots = jobs_state.get("company_snapshots", {})
         
         old_jobs = {item["job_id"]: item for item in old_jobs_list if isinstance(item, dict) and "job_id" in item}
         
@@ -689,21 +710,75 @@ async def main():
         new_jobs = []
         changed_companies = []
         new_company_hashes = old_company_hashes.copy()
+        new_company_snapshots = old_company_snapshots.copy()
         
         for item in valid_items:
             if item.get("type") == "hash":
                 c_name = item["company"]
-                c_hash = item["hash"]
+                c_hash = str(item.get("hash", ""))
+                c_links = item.get("links", [])
                 old_hash = old_company_hashes.get(c_name)
-                # If hash changed (and we had a valid MD5 old hash to compare to)
-                # Avoid false alerts if old_hash was a process-randomized integer hash
-                if old_hash and str(old_hash) != str(c_hash) and not str(old_hash).lstrip('-').isdigit():
-                    if not item.get("llm_verified", False):
-                        changed_companies.append(item)
+                old_links = old_company_snapshots.get(c_name)
+
+                # 1. Baseline migration: save initial snapshot silently without spamming
+                if old_links is None:
+                    logger.info(f"Initialized link snapshot baseline for '{c_name}' ({len(c_links)} links). No alert sent.")
+                    new_company_snapshots[c_name] = c_links
+                    new_company_hashes[c_name] = c_hash
+                    continue
+
+                # 2. Diffing: identify new links not present in old snapshot
+                old_link_urls = {
+                    (lk.get("url") or "").rstrip("/").lower()
+                    for lk in old_links if lk.get("url")
+                }
+                old_link_pairs = {
+                    ((lk.get("url") or "").rstrip("/").lower(), (lk.get("text") or "").strip().lower())
+                    for lk in old_links
+                }
+
+                new_links = []
+                for lk in c_links:
+                    lk_url = (lk.get("url") or "").strip()
+                    lk_text = (lk.get("text") or "").strip()
+                    if not lk_url and not lk_text:
+                        continue
+                    norm_url = lk_url.rstrip("/").lower()
+                    norm_pair = (norm_url, lk_text.lower())
+                    if norm_url not in old_link_urls or norm_pair not in old_link_pairs:
+                        new_links.append({"text": lk_text, "url": lk_url})
+
+                has_changed = (old_hash and str(old_hash) != c_hash) or bool(new_links)
+
+                if has_changed and new_links:
+                    # Filter for relevant IT / apprenticeship keywords
+                    relevant_links = [
+                        lk for lk in new_links
+                        if is_relevant_change_link(lk.get("text", ""), lk.get("url", ""))
+                    ]
+
+                    if relevant_links:
+                        if not item.get("llm_verified", False):
+                            logger.info(
+                                f"Relevant IT/elev link(s) detected for '{c_name}': "
+                                f"{[l['text'] for l in relevant_links]}"
+                            )
+                            item_alert = item.copy()
+                            item_alert["new_links"] = relevant_links
+                            changed_companies.append(item_alert)
+                        else:
+                            logger.info(f"Relevant links found for {c_name}, but LLM verified 0 jobs. Updating silently.")
                     else:
-                        logger.info(f"Structure changed for {c_name}, but LLM verified 0 jobs. Updating hash silently.")
-                    
-                new_company_hashes[c_name] = str(c_hash)
+                        sample_titles = [l['text'] for l in new_links[:3]]
+                        logger.info(
+                            f"Non-IT links changed for '{c_name}' ({len(new_links)} new links: {sample_titles}). "
+                            f"Ignored for Telegram alert."
+                        )
+                elif has_changed and not new_links:
+                    logger.info(f"DOM/structural hash changed for '{c_name}' with 0 new links. Ignored for Telegram alert.")
+
+                new_company_snapshots[c_name] = c_links
+                new_company_hashes[c_name] = c_hash
             else:
                 job_id = item["job_id"]
                 
@@ -801,6 +876,10 @@ async def main():
             
         if new_company_hashes != old_company_hashes:
             jobs_state["company_hashes"] = new_company_hashes
+            jobs_state_updated = True
+
+        if new_company_snapshots != old_company_snapshots:
+            jobs_state["company_snapshots"] = new_company_snapshots
             jobs_state_updated = True
 
         # Persist updated CVR validation cache if changed
