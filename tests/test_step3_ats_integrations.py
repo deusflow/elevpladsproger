@@ -227,6 +227,29 @@ class TestStep3ATSIntegrations(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_scrape_custom_companies_error_isolation(self):
+        """Failure of one company scraper must not crash scrape_custom_companies or drop other companies."""
+        mock_context = MagicMock()
+        company_fail = {"name": "Failing Corp", "url": "https://fail.com"}
+        company_ok = {"name": "Working Corp", "url": "https://ok.com"}
+
+        async def mock_scrape(context, company, sem):
+            if company["name"] == "Failing Corp":
+                raise RuntimeError("Simulated network crash for Failing Corp")
+            return [{"job_id": "ok_1", "title": "IT Elev", "company": "Working Corp"}]
+
+        async def run_test():
+            with patch("company_scrapers.scrape_company", side_effect=mock_scrape), \
+                 patch("builtins.open", unittest.mock.mock_open(read_data="[]")):
+                results = await company_scrapers.scrape_custom_companies(mock_context, dynamic_companies=[company_fail, company_ok])
+                # Results must contain the successful company's job
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0]["job_id"], "ok_1")
+                # Failing company must have its fail_count incremented
+                self.assertEqual(company_fail.get("fail_count"), 1)
+
+        asyncio.run(run_test())
+
 
 if __name__ == "__main__":
     unittest.main()

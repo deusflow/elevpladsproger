@@ -600,11 +600,17 @@ async def scrape_custom_companies(context: BrowserContext, dynamic_companies: Op
     
     sem = asyncio.Semaphore(3)
     tasks = [scrape_company(context, company, sem) for company in companies]
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     
     all_jobs = []
-    for sublist in results:
-        if isinstance(sublist, list):
-            all_jobs.extend(sublist)
+    for idx, res in enumerate(results):
+        company_info = companies[idx] if idx < len(companies) else {}
+        comp_name = company_info.get("name", f"Company #{idx}")
+        comp_url = company_info.get("url", "unknown URL")
+        if isinstance(res, Exception):
+            logger.error(f"Scraper failed for company '{comp_name}' ({comp_url}): {res}", exc_info=True)
+            company_info["fail_count"] = company_info.get("fail_count", 0) + 1
+        elif isinstance(res, list):
+            all_jobs.extend(res)
         
     return all_jobs
