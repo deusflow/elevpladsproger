@@ -783,10 +783,14 @@ async def main():
             await notify_telegram([], [], [], heartbeat_msg, [], radar_alerts=radar_alerts)
             jobs_state["last_heartbeat_date"] = today_str
             jobs_state_updated = True
-        elif radar_alerts or changed_companies or cycle_alerts:
-            await notify_telegram([], changed_companies, cycle_alerts, "", active_restructuring, radar_alerts=radar_alerts)
         else:
-            await notify_telegram(new_jobs, changed_companies, cycle_alerts, "", active_restructuring, radar_alerts=radar_alerts)
+            # 1. Always send new jobs first if discovered
+            if new_jobs:
+                await notify_telegram(new_jobs, [], [], "", active_restructuring, radar_alerts=None)
+
+            # 2. Send radar, structural change, or cycle alerts as a separate alert message
+            if radar_alerts or changed_companies or cycle_alerts:
+                await notify_telegram([], changed_companies, cycle_alerts, "", active_restructuring, radar_alerts=radar_alerts)
         
         # Always save state to update expiration statuses even if no new jobs
         for nj in new_jobs:
