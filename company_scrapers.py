@@ -19,6 +19,7 @@ except ImportError:
         Page = Any  # type: ignore
 import config
 from scrapers import format_job, is_valid_job
+from utils import normalize_job_url, normalize_company_name, extract_json_payload
 from tenacity import retry, stop_after_attempt, wait_fixed
 try:
     from playwright_stealth import stealth_async
@@ -57,7 +58,7 @@ async def extract_links_from_frame(frame, base_url, found_jobs):
         await extract_links_from_frame(child, base_url, found_jobs)
 
 async def extract_jobs_with_groq(company_name: str, page_url: str, page_text: str) -> tuple[list[dict], bool]:
-    if not config.GROQ_API_KEY:
+    if not config.GROQ_API_KEY and not getattr(config, "GEMINI_API_KEY", None):
         return [], False
 
     # Keyword pre-filter to avoid burning Groq tokens on pages without relevant keywords
@@ -93,55 +94,83 @@ Page Text:
 {truncated_text}
 """
     
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {config.GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    for model_id in ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]:
+    # 1. Fast Gemini extraction: gemini-2.5-flash-lite
+    if getattr(config, "GEMINI_API_KEY", None):
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={config.GEMINI_API_KEY}"
         payload = {
-            "model": model_id,
-            "messages": [
-                {"role": "system", "content": "You are a precise JSON job extractor."},
-                {"role": "user", "content": prompt}
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json"}
         }
-        
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                for attempt in range(2):
-                    resp = await client.post(url, headers=headers, json=payload)
+                resp = await client.post(gemini_url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data["candidates"][0]["content"]["parts"][0]["text"]
+                    result = extract_json_payload(content)
+                    raw_jobs = result.get("jobs", []) if isinstance(result, dict) else []
+                    extracted = []
+                    for j in raw_jobs:
+                        title = j.get("title", "").strip()
+                        job_url = j.get("url", "").strip() or page_url
+                        if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
+                            extracted.append({"title": title, "url": job_url})
+                    if extracted:
+                        logger.info(f"Gemini (gemini-2.5-flash-lite) extracted {len(extracted)} IT elev jobs for {company_name}")
+                    return extracted, True
+                elif resp.status_code in [429, 503]:
+                    logger.warning(f"Gemini 2.5-flash-lite status {resp.status_code} for {company_name}, switching immediately to Groq...")
+                else:
+                    logger.warning(f"Gemini API error {resp.status_code} for {company_name}: {resp.text}")
+        except Exception as e:
+            logger.warning(f"Gemini exception for {company_name}: {e}, switching immediately to Groq...")
+
+    # 2. Fast Groq fallback chain: openai/gpt-oss-20b -> qwen/qwen3.8-27b
+    if config.GROQ_API_KEY:
+        groq_url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {config.GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        for model_id in ["openai/gpt-oss-20b", "qwen/qwen3.8-27b"]:
+            payload = {
+                "model": model_id,
+                "messages": [
+                    {"role": "system", "content": "You are a precise JSON job extractor."},
+                    {"role": "user", "content": prompt}
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.1
+            }
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(groq_url, headers=headers, json=payload)
                     if resp.status_code == 200:
                         data = resp.json()
                         content = data["choices"][0]["message"]["content"]
-                        result = json.loads(content)
-                        raw_jobs = result.get("jobs", [])
+                        result = extract_json_payload(content)
+                        raw_jobs = result.get("jobs", []) if isinstance(result, dict) else []
                         extracted = []
                         for j in raw_jobs:
                             title = j.get("title", "").strip()
                             job_url = j.get("url", "").strip() or page_url
                             if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
-                                extracted.append({
-                                    "title": title,
-                                    "url": job_url
-                                })
+                                extracted.append({"title": title, "url": job_url})
                         if extracted:
                             logger.info(f"Groq LLM ({model_id}) extracted {len(extracted)} IT elev jobs for {company_name}")
                         return extracted, True
-                    elif resp.status_code == 429 and attempt == 0:
-                        logger.warning(f"Groq 429 rate limit hit for {company_name} on {model_id}, retrying in 2s...")
-                        await asyncio.sleep(2.0)
+                    elif resp.status_code in [429, 503]:
+                        logger.warning(f"Groq {resp.status_code} on {model_id} for {company_name}, switching immediately to next model...")
+                        continue
                     else:
                         logger.warning(f"Groq API error {resp.status_code} on {model_id}: {resp.text}")
-                        break
-        except Exception as e:
-            logger.error(f"Error invoking Groq LLM ({model_id}) for {company_name}: {e}")
+                        continue
+            except Exception as e:
+                logger.warning(f"Error invoking Groq LLM ({model_id}) for {company_name}: {e}")
+                continue
         
     return [], False
 
-@retry(stop=stop_after_attempt(2), wait=wait_fixed(2))
 async def _do_scrape_company(page: Page, url: str):
     response = await page.goto(url, wait_until="domcontentloaded", timeout=25000)
     if response and response.status in [404, 410]:
@@ -198,6 +227,26 @@ async def _do_scrape_company(page: Page, url: str):
     return found_jobs, body_text, structural_hash, extracted_links
 
 
+async def _scrape_company_with_browser_retry(context: BrowserContext, url: str) -> tuple[list[dict], str, str, list[dict]]:
+    """Scrape company career page using headless browser with a fresh page instance on retry."""
+    last_err: Optional[Exception] = None
+    for attempt in range(1, 3):
+        page = await context.new_page()
+        try:
+            await stealth_async(page)
+            return await _do_scrape_company(page, url)
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Browser scrape attempt {attempt}/2 failed for {url}: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2.0)
+        finally:
+            await page.close()
+    if last_err:
+        raise last_err
+    return [], "", "", []
+
+
 async def try_teamtailor_api(company_name: str, base_url: str) -> Optional[list[dict]]:
     """Fast, direct JSON API extraction for Teamtailor-powered Danish career sites."""
     clean_url = base_url.rstrip("/")
@@ -224,7 +273,10 @@ async def try_teamtailor_api(company_name: str, base_url: str) -> Optional[list[
                         if title and link:
                             links.append({"text": title, "url": link})
                             if is_valid_job(title, "", company_name, "", bypass_geo=True):
-                                job_id = hashlib.md5(f"{company_name}_{title}_{link}".encode()).hexdigest()
+                                clean_c = normalize_company_name(company_name)
+                                clean_u = normalize_job_url(link)
+                                clean_t = title.strip().lower()
+                                job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                                 jobs.append(format_job(
                                     job_id=job_id,
                                     title=title,
@@ -301,7 +353,10 @@ async def try_emply_api(company_name: str, base_url: str) -> Optional[list[dict]
                             links.append({"text": title, "url": job_url})
 
                         if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
-                            job_id = hashlib.md5(f"{company_name}_{title}_{job_url}".encode()).hexdigest()
+                            clean_c = normalize_company_name(company_name)
+                            clean_u = normalize_job_url(job_url)
+                            clean_t = title.strip().lower()
+                            job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                             jobs.append(format_job(
                                 job_id=job_id,
                                 title=title,
@@ -338,7 +393,10 @@ async def try_emply_api(company_name: str, base_url: str) -> Optional[list[dict]
                     loc = v.get("location")
                     postal = str(loc.get("zip", "")) if isinstance(loc, dict) else ""
                     if title and is_valid_job(title, postal, company_name, "", bypass_geo=True):
-                        job_id = hashlib.md5(f"{company_name}_{title}_{job_url}".encode()).hexdigest()
+                        clean_c = normalize_company_name(company_name)
+                        clean_u = normalize_job_url(job_url)
+                        clean_t = title.strip().lower()
+                        job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                         jobs.append(format_job(
                             job_id=job_id,
                             title=title,
@@ -395,7 +453,10 @@ async def try_workday_api(company_name: str, base_url: str) -> Optional[list[dic
                     if title:
                         links.append({"text": title, "url": job_url})
                     if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
-                        job_id = hashlib.md5(f"{company_name}_{title}_{job_url}".encode()).hexdigest()
+                        clean_c = normalize_company_name(company_name)
+                        clean_u = normalize_job_url(job_url)
+                        clean_t = title.strip().lower()
+                        job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                         jobs.append(format_job(
                             job_id=job_id,
                             title=title,
@@ -453,7 +514,10 @@ async def try_signatur_api(company_name: str, base_url: str) -> Optional[list[di
                     links.append({"text": title, "url": full_url})
 
                 if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
-                    job_id = hashlib.md5(f"{company_name}_{title}_{full_url}".encode()).hexdigest()
+                    clean_c = normalize_company_name(company_name)
+                    clean_u = normalize_job_url(full_url)
+                    clean_t = title.strip().lower()
+                    job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                     jobs.append(format_job(
                         job_id=job_id,
                         title=title,
@@ -507,7 +571,10 @@ async def try_talentsoft_api(company_name: str, base_url: str) -> Optional[list[
                 if title:
                     links.append({"text": title, "url": full_url})
                 if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
-                    job_id = hashlib.md5(f"{company_name}_{title}_{full_url}".encode()).hexdigest()
+                    clean_c = normalize_company_name(company_name)
+                    clean_u = normalize_job_url(full_url)
+                    clean_t = title.strip().lower()
+                    job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                     jobs.append(format_job(
                         job_id=job_id,
                         title=title,
@@ -539,32 +606,34 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
         if name:
             logger.debug(f"Skipping {name}: no valid URL configured (url={url!r})")
         return []
-        
-    # Fast path: Check direct ATS APIs (Teamtailor, Emply, Workday, Signatur, TalentSoft)
-    for ats_fn in (try_teamtailor_api, try_emply_api, try_workday_api, try_signatur_api, try_talentsoft_api):
-        try:
-            res = await ats_fn(name, url)
-            if res is not None:
-                company["fail_count"] = 0
-                company["last_success"] = datetime.now(timezone.utc).isoformat()
-                return res
-        except Exception as e:
-            logger.debug(f"Direct ATS check {ats_fn.__name__} failed for {name}: {e}")
 
-    # Fallback: Headless browser crawling for custom or blocked career portals
+    # Bounded by semaphore to prevent rate-limit flooding across all targets
     async with sem:
+        # Fast path: Check direct ATS APIs (Teamtailor, Emply, Workday, Signatur, TalentSoft)
+        for ats_fn in (try_teamtailor_api, try_emply_api, try_workday_api, try_signatur_api, try_talentsoft_api):
+            try:
+                res = await ats_fn(name, url)
+                if res is not None:
+                    company["fail_count"] = 0
+                    company["last_success"] = datetime.now(timezone.utc).isoformat()
+                    return res
+            except Exception as e:
+                logger.debug(f"Direct ATS check {ats_fn.__name__} failed for {name}: {e}")
+
+        # Fallback: Headless browser crawling for custom or blocked career portals
         logger.info(f"Crawling {name}: {url}")
-        page = await context.new_page()
-        await stealth_async(page)
         jobs = []
         try:
-            found_jobs, body_text, structural_hash, extracted_links = await _do_scrape_company(page, url)
+            found_jobs, body_text, structural_hash, extracted_links = await _scrape_company_with_browser_retry(context, url)
             
             # If LLM API key is present, try LLM extraction as high-precision fallback
             llm_jobs, llm_success = await extract_jobs_with_groq(name, url, body_text)
             if llm_jobs:
                 for lj in llm_jobs:
-                    job_id = hashlib.md5(f"{name}_{lj['title']}_{lj['url']}".encode()).hexdigest()
+                    clean_c = normalize_company_name(name)
+                    clean_u = normalize_job_url(lj["url"])
+                    clean_t = lj["title"].strip().lower()
+                    job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                     jobs.append(format_job(
                         job_id=job_id,
                         title=lj["title"],
@@ -577,7 +646,10 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
                     fj_title = fj["title"].replace("Mulig stilling: ", "")
                     # Validate through the same filter as other scrapers, bypassing geo check
                     if is_valid_job(fj_title, "", name, "", bypass_geo=True):
-                        job_id = hashlib.md5(f"{name}_{fj_title}_{fj['url']}".encode()).hexdigest()
+                        clean_c = normalize_company_name(name)
+                        clean_u = normalize_job_url(fj["url"])
+                        clean_t = fj_title.strip().lower()
+                        job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                         jobs.append(format_job(
                             job_id=job_id,
                             title=fj["title"],
@@ -586,8 +658,11 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
                             source="UniversalCrawler"
                         ))
             elif "datatekniker" in body_text.lower() and not llm_success:
+                clean_c = normalize_company_name(name)
+                clean_u = normalize_job_url(url)
+                job_id = hashlib.md5(f"custom_{clean_c}_mulig_stilling_{clean_u}".encode()).hexdigest()
                 jobs.append(format_job(
-                    job_id=f"custom_{name.replace(' ', '_').lower()}",
+                    job_id=job_id,
                     title="Mulig IT-stilling fundet i teksten på siden!",
                     company=name,
                     url=url,
@@ -608,16 +683,6 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
         except Exception as e:
             logger.error(f"Failed to crawl {name} ({url}): {e}")
             company["fail_count"] = company.get("fail_count", 0) + 1
-            try:
-                os.makedirs("screenshots", exist_ok=True)
-                safe_name = name.replace(' ', '_').lower()
-                screenshot_path = f"screenshots/{safe_name}_error.png"
-                await page.screenshot(path=screenshot_path, timeout=3000)
-                logger.info(f"Saved error screenshot for {name} to {screenshot_path}")
-            except Exception as se:
-                logger.error(f"Failed to capture screenshot for {name}: {se}")
-        finally:
-            await page.close()
             
         return jobs
 

@@ -182,11 +182,12 @@ async def save_state(state: dict, state_key: str = "jobs_state"):
             except Exception as e:
                 logger.warning(f"Could not verify {state_key} version: {e}")
                 
+            # Increment version for optimistic locking exactly once before retry loop
+            state["_version"] = state.get("_version", 0) + 1
+            state["_last_saved"] = datetime.now(timezone.utc).isoformat()
+
             for attempt in range(1, 4):
                 try:
-                    # Increment version for optimistic locking
-                    state["_version"] = state.get("_version", 0) + 1
-                    state["_last_saved"] = datetime.now(timezone.utc).isoformat()
                     resp = await client.post(url, headers=headers, json={"key": state_key, "value": state}, timeout=10.0)
                     if resp.status_code in [200, 201, 204]:
                         logger.info(f"Saved state to Supabase for key '{state_key}' via UPSERT.")
@@ -526,6 +527,9 @@ async def main():
 
     mode = args.mode
     logger.info(f"Starting scrape run in mode: {mode}")
+
+    # Fail-fast check of mandatory environment variables
+    config.validate_config(mode=mode)
 
     # BUG-3 fix: define `now` at top level so it's available in ALL modes
     now = datetime.now(timezone.utc)

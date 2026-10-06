@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 
 # Logging Setup
@@ -11,6 +12,26 @@ logger = logging.getLogger("elevplads_scraper")
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+
+def validate_config(mode: str = "all", skip_in_tests: bool = True) -> None:
+    """Fail-fast verification of mandatory environment variables at application startup."""
+    if skip_in_tests and ("unittest" in sys.modules or "pytest" in sys.modules):
+        return
+
+    required = {
+        "TELEGRAM_BOT_TOKEN": TELEGRAM_BOT_TOKEN,
+        "TELEGRAM_CHAT_ID": TELEGRAM_CHAT_ID,
+        "SUPABASE_URL": SUPABASE_URL,
+        "SUPABASE_KEY": SUPABASE_KEY,
+    }
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        logger.critical(
+            f"FAIL-FAST: Missing mandatory environment variables: {', '.join(missing)}. "
+            "Please ensure they are configured in your environment or GitHub Secrets."
+        )
+        sys.exit(1)
 
 # Playwright / HTTPX Proxy Configuration
 PROXY_URL = os.getenv("PROXY_URL")

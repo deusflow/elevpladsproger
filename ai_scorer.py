@@ -72,9 +72,10 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
     - "cover_letter_draft": If score > 85, write a professional, compelling draft cover letter (Ansøgning) in Danish based on the Candidate Profile and Job Description. If score <= 85, return an empty string "". DO NOT output markdown blocks around the JSON.
     """
     
-    # Try Gemini first
+    # 1. Try Google Gemini models
     if config.GEMINI_API_KEY:
-        for g_model in ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]:
+        gemini_models = ["gemini-2.5-flash-lite", "gemini-2.0-flash"]
+        for g_model in gemini_models:
             gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             gemini_payload = {
                 "contents": [{
@@ -90,20 +91,28 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
                     if resp.status_code == 200:
                         data = resp.json()
                         content = data["candidates"][0]["content"]["parts"][0]["text"]
-                        return extract_json_payload(content)
+                        parsed = extract_json_payload(content)
+                        if isinstance(parsed, dict) and "score" in parsed:
+                            return parsed
+                    elif resp.status_code in [429, 503]:
+                        logger.warning(f"Gemini API status {resp.status_code} on {g_model}, switching immediately to next model...")
+                        continue
                     else:
                         logger.warning(f"Gemini API scoring error {resp.status_code} on {g_model}: {resp.text}")
+                        continue
             except Exception as e:
-                logger.error(f"Gemini API exception during scoring ({g_model}): {e}")
+                logger.warning(f"Gemini API exception during scoring ({g_model}): {e}, switching to next model...")
+                continue
             
-    # Fallback to Groq
+    # 2. Fallback to Groq models
     if config.GROQ_API_KEY:
         groq_url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {config.GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
-        for model_id in ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]:
+        groq_models = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
+        for model_id in groq_models:
             payload = {
                 "model": model_id,
                 "messages": [
@@ -119,30 +128,40 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
                     resp = await client.post(groq_url, headers=headers, json=payload)
                     if resp.status_code == 200:
                         content = resp.json()["choices"][0]["message"]["content"]
-                        return extract_json_payload(content)
+                        parsed = extract_json_payload(content)
+                        if isinstance(parsed, dict) and "score" in parsed:
+                            return parsed
+                    elif resp.status_code in [429, 503]:
+                        logger.warning(f"Groq API status {resp.status_code} on {model_id}, switching immediately to next model...")
+                        continue
                     else:
                         logger.warning(f"Groq API scoring error {resp.status_code} on {model_id}: {resp.text}")
+                        continue
             except Exception as e:
-                logger.error(f"Groq API exception during scoring ({model_id}): {e}")
+                logger.warning(f"Groq API exception during scoring ({model_id}): {e}, switching to next model...")
+                continue
         
     return {}
     
 async def enrich_jobs_with_ai(new_jobs: list[dict]):
-    """Fetch text and score each new job asynchronously."""
+    """Fetch text and score each new job asynchronously with isolated error handling."""
     if not new_jobs or (not config.GEMINI_API_KEY and not config.GROQ_API_KEY):
         return
         
     logger.info(f"Enriching {len(new_jobs)} new jobs with AI match score...")
     
     async def process_job(job):
-        text = await fetch_job_text(job["url"])
-        score_data = await get_match_score(job["title"], job["company"], text)
-        if score_data:
-            job["match_score"] = score_data.get("score")
-            job["match_city"] = score_data.get("city")
-            job["match_reason"] = score_data.get("reason")
-            job["cover_letter_draft"] = score_data.get("cover_letter_draft", "")
-            logger.info(f"Scored job {job['title']}: {job.get('match_score')}%")
+        try:
+            text = await fetch_job_text(job["url"])
+            score_data = await get_match_score(job["title"], job["company"], text)
+            if score_data:
+                job["match_score"] = score_data.get("score")
+                job["match_city"] = score_data.get("city")
+                job["match_reason"] = score_data.get("reason")
+                job["cover_letter_draft"] = score_data.get("cover_letter_draft", "")
+                logger.info(f"Scored job {job['title']}: {job.get('match_score')}%")
+        except Exception as e:
+            logger.warning(f"Error enriching job '{job.get('title')}': {e}")
             
     import asyncio
     sem = asyncio.Semaphore(3)
@@ -151,4 +170,7 @@ async def enrich_jobs_with_ai(new_jobs: list[dict]):
         async with sem:
             await process_job(job)
             
-    await asyncio.gather(*(process_job_with_sem(job) for job in new_jobs))
+    results = await asyncio.gather(*(process_job_with_sem(job) for job in new_jobs), return_exceptions=True)
+    for idx, res in enumerate(results):
+        if isinstance(res, Exception):
+            logger.warning(f"Failed to score job #{idx} ({new_jobs[idx].get('title')}): {res}")

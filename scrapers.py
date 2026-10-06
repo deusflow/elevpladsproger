@@ -18,6 +18,7 @@ from bs4 import BeautifulSoup
 import config
 from config import logger
 import functools
+from utils import normalize_job_url, normalize_company_name
 
 def with_error_screenshot(scraper_name: str):
     def decorator(func):
@@ -259,8 +260,10 @@ async def scrape_itjobbank(page: Page) -> list[dict]:
                 postal = postal_match.group(1) if postal_match else ""
 
                 if is_valid_job(title, postal, company, location_text):
-                    job_id_str = f"{company}_{title}_{job_url}"
-                    job_id = hashlib.md5(job_id_str.encode()).hexdigest()
+                    clean_c = normalize_company_name(company)
+                    clean_u = normalize_job_url(job_url)
+                    clean_t = re.sub(r'\s+', ' ', title.strip().lower())
+                    job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                     if job_id not in seen_job_ids:
                         seen_job_ids.add(job_id)
                         jobs.append(format_job(
@@ -396,8 +399,10 @@ async def scrape_jobindex(page: Page) -> list[dict]:
                     postal = postal_match.group(1) if postal_match else ""
                 
                 if is_valid_job(title, postal, company, location_text):
-                    job_id_str = f"{company}_{title}_{job_url}"
-                    job_id = hashlib.md5(job_id_str.encode()).hexdigest()
+                    clean_c = normalize_company_name(company)
+                    clean_u = normalize_job_url(job_url)
+                    clean_t = re.sub(r'\s+', ' ', title.strip().lower())
+                    job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                     if job_id not in seen_job_ids:
                         seen_job_ids.add(job_id)
                         jobs.append(format_job(
@@ -503,8 +508,10 @@ async def scrape_techjob(page: Page) -> list[dict]:
                 postal = postal_match.group(1) if postal_match else ""
 
                 if is_valid_job(title, postal, company, location_text):
-                    job_id_str = f"{company}_{title}_{job_url}"
-                    job_id = hashlib.md5(job_id_str.encode()).hexdigest()
+                    clean_c = normalize_company_name(company)
+                    clean_u = normalize_job_url(job_url)
+                    clean_t = re.sub(r'\s+', ' ', title.strip().lower())
+                    job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                     jobs.append(format_job(
                         job_id=job_id,
                         title=title,
@@ -567,8 +574,10 @@ async def scrape_linkedin() -> list[dict]:
                         postal = postal_match.group(1) if postal_match else ""
                         
                         if is_valid_job(title, postal, company, location_text):
-                            job_id_str = f"linkedin_{company}_{title}_{clean_job_url}"
-                            job_id = hashlib.md5(job_id_str.encode()).hexdigest()
+                            clean_c = normalize_company_name(company)
+                            clean_u = normalize_job_url(clean_job_url)
+                            clean_t = re.sub(r'\s+', ' ', title.strip().lower())
+                            job_id = hashlib.md5(f"linkedin_{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
                             jobs.append(format_job(
                                 job_id=job_id,
                                 title=title,
