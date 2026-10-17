@@ -15,11 +15,41 @@ class TestConfig(unittest.TestCase):
             self.assertTrue(url.startswith("http://") or url.startswith("https://"))
 
     def test_postal_ranges(self):
-        """TARGET_POSTAL_CODES must cover Region Midtjylland (including 8000 Aarhus, 8800 Viborg)."""
+        """TARGET_POSTAL_CODES must cover Jutland + Funen and exclude Zealand/Hovedstaden."""
+        # Midtjylland
         self.assertIn("8000", config.TARGET_POSTAL_CODES)
         self.assertIn("8800", config.TARGET_POSTAL_CODES)
         self.assertIn("8600", config.TARGET_POSTAL_CODES)
+        # Nordjylland
+        self.assertIn("9000", config.TARGET_POSTAL_CODES)   # Aalborg
+        self.assertIn("9800", config.TARGET_POSTAL_CODES)   # Hjørring
+        # Syddanmark (incl. Funen)
+        self.assertIn("5000", config.TARGET_POSTAL_CODES)   # Odense
+        self.assertIn("6000", config.TARGET_POSTAL_CODES)   # Kolding
+        self.assertIn("6700", config.TARGET_POSTAL_CODES)   # Esbjerg
+        self.assertIn("7100", config.TARGET_POSTAL_CODES)   # Vejle
         self.assertNotIn("2100", config.TARGET_POSTAL_CODES)  # Copenhagen
+        self.assertNotIn("4000", config.TARGET_POSTAL_CODES)  # Roskilde
+        self.assertNotIn("3700", config.TARGET_POSTAL_CODES)  # Bornholm
+
+    def test_target_regions(self):
+        """Region scope must cover Jutland + Funen with matching URL slugs."""
+        self.assertEqual(
+            config.TARGET_REGIONS,
+            ["Midtjylland", "Nordjylland", "Syddanmark"],
+        )
+        self.assertEqual(
+            config.TARGET_REGION_SLUGS,
+            ["region-midtjylland", "region-nordjylland", "region-syddanmark"],
+        )
+        for slug in config.TARGET_REGION_SLUGS:
+            self.assertNotIn(" ", slug)
+        # Every region must share its slug prefix
+        for region in config.TARGET_REGIONS:
+            self.assertTrue(
+                any(slug == f"region-{region.lower()}" for slug in config.TARGET_REGION_SLUGS),
+                msg=region,
+            )
 
     def test_target_enterprises(self):
         """Target enterprises list should contain key regional enterprise employers."""

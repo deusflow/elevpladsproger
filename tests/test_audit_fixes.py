@@ -39,10 +39,11 @@ class TestAuditFixes(unittest.TestCase):
         self.assertTrue(os.path.exists(config.TARGET_COMPANIES_PATH))
 
     def test_bug11_techjob_url_schema(self):
-        """BUG-11: TechJob search URL must use /sog?query= instead of /search?q=."""
+        """BUG-11: TechJob must scrape the real job board (/jobs), not the content search (/sog)."""
         with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scrapers.py")) as f:
             content = f.read()
-        self.assertIn("https://techjob.dk/sog?query=", content)
+        self.assertIn("https://techjob.dk/jobs?page=", content)
+        self.assertNotIn("https://techjob.dk/sog?query=", content)
         self.assertNotIn("https://techjob.dk/search?q=", content)
 
     def test_bug12_extract_json_payload_utility(self):
@@ -81,6 +82,22 @@ class TestAuditFixes(unittest.TestCase):
         # Should alert on KvalitetsCode ApS because it posted in target_month last year
         self.assertTrue(any("KvalitetsCode ApS" in alert for alert in alerts))
         self.assertTrue(any("Historisk data" in alert for alert in alerts))
+
+    def test_bug12_jobnet_region_scope_and_paging(self):
+        """BUG-12 (extended): Jobnet must scope its search to ALL target regions
+        (repeated `regions` params, verified against the live BFF) and page
+        through the full regional result set. Verifying only the first page of a
+        national search lost 207 of 287 regional ads (verified live)."""
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scrapers.py")) as f:
+            content = f.read()
+        # The regions param must be built by joining ALL target regions
+        # (repeated `regions=key` params, verified against the live BFF).
+        self.assertIn('regions_param = "&".join(f"regions={r}" for r in config.TARGET_REGIONS)', content)
+        self.assertIn("&{regions_param}'", content)
+        self.assertIn("pageNumber={page_num}", content)
+        self.assertIn("totalJobAdCount", content)
+        # Jobindex / IT-Jobbank must iterate the region slugs, not hard-code one
+        self.assertIn("TARGET_REGION_SLUGS", content)
 
 
 if __name__ == "__main__":

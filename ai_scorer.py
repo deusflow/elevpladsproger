@@ -40,8 +40,16 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
         
     prompt = f"""
     You are an expert IT job match analyzer for Denmark.
-    Evaluate this job posting for an IT Apprenticeship (Elevplads) or Trainee role.
-    
+    Evaluate this job posting for a Danish IT apprenticeship (Elevplads / lærling) or trainee role.
+
+    PRIMARY GOAL: the candidate is a Datatekniker (Data- og kommunikationsuddannelsen) apprentice.
+    He wants Datatekniker roles with these priorities:
+      1. Datatekniker med speciale i programmering / software development  (HIGHEST priority)
+      2. Datatekniker med speciale i cybersikkerhed / IT-security
+      3. Datatekniker med speciale i infrastruktur / drift / netværk, and generic IT-elev roles
+    EXPLICITLY EXCLUDED: It-supporter, helpdesk, servicedesk, user-support roles (score 0),
+    and any non-IT role (score 0).
+
     Candidate Profile:
     {config.USER_PROFILE}
     
@@ -66,7 +74,11 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
     }}
     
     Rules:
-    - "score" must be an integer from 0 to 100 representing how perfectly it matches the Candidate Profile. Give 0 if it's explicitly 'IT-supporter', 'Infrastruktur', or non-IT.
+    - "score" must be an integer from 0 to 100 representing how perfectly it matches the Candidate Profile:
+        * 90-100: Datatekniker eller IT-elev med fokus på programmering, softwareudvikling eller kodning.
+        * 75-89: Datatekniker med speciale i cybersikkerhed / IT-sikkerhed.
+        * 55-74: Datatekniker med speciale i infrastruktur, drift eller netværk, samt generiske IT-elev-stillinger.
+        * 0: It-supporter, helpdesk, servicedesk, brugerstøtte, eller ikke-IT-stillinger (fx butik, lager, marketing).
     - "city" must be the city extracted from the text (or "Ukendt" if not found).
     - "reason" must be ONE short Danish sentence summarizing why it's a good/bad match.
     - "cover_letter_draft": If score > 85, write a professional, compelling draft cover letter (Ansøgning) in Danish based on the Candidate Profile and Job Description. If score <= 85, return an empty string "". DO NOT output markdown blocks around the JSON.

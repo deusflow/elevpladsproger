@@ -69,15 +69,16 @@ async def extract_jobs_with_groq(company_name: str, page_url: str, page_text: st
         
     truncated_text = page_text[:8000]
     
-    prompt = f"""You are an IT job scraper for Denmark (Midtjylland region).
+    prompt = f"""You are an IT job scraper for Denmark (Jutland + Funen: Midtjylland, Nordjylland and Syddanmark regions).
 Analyze the following career page text for '{company_name}' ({page_url}).
-Identify any IT apprenticeship, IT trainee, IT elevplads, Datatekniker (programmering or cybersecurity), or Software developer elev jobs.
+Identify any IT apprenticeship, IT trainee, IT elevplads, Datatekniker (programmering, cybersikkerhed or infrastruktur), or Software developer elev jobs.
 
 CRUCIAL: You must also look for "hidden" or unsolicited (uopfordret ansøgning) apprenticeship announcements. If a paragraph mentions sending an unsolicited CV or email for an IT-elev or datatekniker role, treat it as a valid job opening with the title "Uopfordret ansøgning: IT-Elev".
 
 IMPORTANT Rules:
-- Exclude IT supporter, infrastructure, helpdesk, or non-IT jobs.
-- Only return jobs that are IT elev / datatekniker / software development / cybersecurity (including unsolicited/hidden ones).
+- Exclude IT supporter / helpdesk / servicedesk / user-support roles, and non-IT jobs.
+- Keep Datatekniker roles including infrastruktur/drift (lower priority, but valid).
+- Only return jobs that are IT elev / datatekniker / software development / cybersecurity / IT-drift (including unsolicited/hidden ones).
 
 Respond ONLY with valid JSON matching this schema:
 {{

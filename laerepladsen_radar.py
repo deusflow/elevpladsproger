@@ -2,21 +2,80 @@ import asyncio
 import logging
 import urllib.parse
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from typing import Any, Optional
 import httpx
 import config
-from scrapers import format_job, is_valid_job
+from scrapers import format_job, is_valid_job, job_priority
 
 logger = logging.getLogger("elevplads_scraper")
 
 LAEREPLADSEN_BASE_API = "https://sr.laerepladsen.dk/api/soeg-opslag"
 UDDANNELSE_NAME = "Data- og kommunikationsuddannelsen"
 
+# Datatekniker specialisations we track. "It-supporter" is deliberately excluded
+# per the project requirement (Datatekniker except IT-support).
+# Order matters: programming is the main focus and is queried/first-collected.
+TARGET_SPECIALTIES = [
+    "Datatekniker med speciale i programmering",
+    "Datatekniker med speciale i cybersikkerhed",
+    "Datatekniker med speciale i infrastruktur",
+]
+
+# The Lærepladsen API hard-caps every query at 500 companies ("Vi viser kun de
+# første 500"). The old code fetched the first 500 companies NATIONALLY and then
+# kept only Midtjylland rows, silently dropping many regional employers.
+#
+# Instead we anchor the search on regional coordinates covering Jutland + Funen
+# (the three target regions) and query ONE SPECIALISATION AT A TIME. All
+# (center, radius) pairs below stay under the 500-company cap (highest observed:
+# 473 for "infrastruktur" around Aarhus) while covering Midtjylland, Nordjylland
+# and Syddanmark.
+REGION_SEARCH_CENTERS: list[tuple[str, str, str]] = [
+    ("56.16", "10.21", "120"),    # Aarhus / East Jutland (Midtjylland)
+    ("56.14", "8.97", "120"),     # Herning / West Jutland (Midtjylland)
+    ("57.048", "9.9187", "110"),  # Aalborg / Vendsyssel (Nordjylland)
+    ("55.3959", "10.3883", "90"), # Odense / Funen (Syddanmark)
+    ("55.71", "9.53", "90"),      # Vejle / Southern Jutland (Syddanmark)
+]
+
+# Backwards-compatible alias for the Midtjylland-only era (lat, lng tuples).
+MIDTJYLLAND_SEARCH_CENTERS = [(lat, lng) for lat, lng, _radius in REGION_SEARCH_CENTERS]
+MIDTJYLLAND_RADIUS_KM = "120"
+
+
+def _place_in_target_region(place: dict) -> bool:
+    """Region/postal check for a Lærepladsen learning place against the target regions."""
+    region = (place.get("region", "") or "").lower()
+    postal = str(place.get("postnummer", ""))
+    if postal in config.TARGET_POSTAL_CODES:
+        return True
+    return (
+        "midtjylland" in region
+        or "nordjylland" in region
+        or "syddanmark" in region
+    )
+
+
+def _merge_place(existing: dict, incoming: dict) -> None:
+    """Merge opslag/godkendelser from a duplicate place into the kept record."""
+    seen_g = {g.get("id") for g in existing.get("godkendelser", [])}
+    for g in incoming.get("godkendelser", []):
+        if g.get("id") not in seen_g:
+            existing.setdefault("godkendelser", []).append(g)
+            seen_g.add(g.get("id"))
+
+    seen_op = {o.get("id") for o in existing.get("opslag", [])}
+    for o in incoming.get("opslag", []):
+        if o.get("id") not in seen_op:
+            existing.setdefault("opslag", []).append(o)
+            seen_op.add(o.get("id"))
+
 
 async def fetch_laerepladsen_all(max_concurrency: int = 8) -> tuple[list[dict], list[dict]]:
-    """Fetch all approved learning places and active postings across Denmark for Data- og kommunikationsuddannelsen.
+    """Fetch all Datatekniker learning places and active postings in the target regions (Jutland + Funen).
+
     Returns:
-        (active_jobs, accredited_places_midtjylland)
+        (active_jobs, accredited_places_in_target_regions)
     """
     udd_encoded = urllib.parse.quote(UDDANNELSE_NAME)
     headers = {
@@ -28,94 +87,94 @@ async def fetch_laerepladsen_all(max_concurrency: int = 8) -> tuple[list[dict], 
     if getattr(config, "PROXY_URL", None):
         client_kwargs["proxy"] = config.PROXY_URL
 
-    active_jobs = []
-    all_places = []
+    all_places: list[dict] = []
+    active_jobs: list[dict] = []
+    pages_fetched = 0
 
     try:
         async with httpx.AsyncClient(**client_kwargs) as client:
-            first_url = f"{LAEREPLADSEN_BASE_API}/0/{udd_encoded}/-1"
-            resp = await client.get(first_url)
-            if resp.status_code != 200:
-                logger.error(f"Lærepladsen API returned HTTP {resp.status_code} on initial page")
-                return [], []
-
-            data = resp.json()
-            total_pages = min(data.get("antalSider", 50), 50)
-            all_places.extend(data.get("laeresteder", []))
-
             sem = asyncio.Semaphore(max_concurrency)
 
-            async def fetch_page(page_num: int):
+            async def fetch_json(spec_encoded: str, page_num: int, params: Optional[dict]) -> Optional[dict]:
                 async with sem:
-                    url = f"{LAEREPLADSEN_BASE_API}/{page_num}/{udd_encoded}/-1"
+                    url = f"{LAEREPLADSEN_BASE_API}/{page_num}/{udd_encoded}/{spec_encoded}"
                     try:
-                        r = await client.get(url)
+                        r = await client.get(url, params=params)
                         if r.status_code == 200:
-                            return r.json().get("laeresteder", [])
+                            return r.json()
+                        logger.warning(f"Lærepladsen HTTP {r.status_code} for page {page_num} ({spec_encoded})")
                     except Exception as e:
                         logger.warning(f"Error fetching Lærepladsen page {page_num}: {e}")
-                    return []
+                    return None
 
-            tasks = [fetch_page(p) for p in range(1, total_pages)]
-            results = await asyncio.gather(*tasks)
-            for items in results:
-                all_places.extend(items)
+            for spec in TARGET_SPECIALTIES:
+                spec_encoded = urllib.parse.quote(spec)
+                for center_lat, center_lng, radius_km in REGION_SEARCH_CENTERS:
+                    params = {
+                        "latitude": center_lat,
+                        "longitude": center_lng,
+                        "afstand": radius_km,
+                    }
+                    first = await fetch_json(spec_encoded, 0, params)
+                    if not first:
+                        # Fallback: retry without the geo restriction so a transient
+                        # geo failure does not blind the whole radar.
+                        first = await fetch_json(spec_encoded, 0, None)
+                    if not first:
+                        logger.warning(f"Lærepladsen: no data for speciale '{spec}' @ {center_lat},{center_lng}")
+                        continue
+
+                    all_places.extend(first.get("laeresteder", []))
+                    total_pages = min(int(first.get("antalSider", 1) or 1), 50)
+                    pages_fetched += 1
+
+                    if total_pages > 1:
+                        tasks = [fetch_json(spec_encoded, p, params) for p in range(1, total_pages)]
+                        for data in await asyncio.gather(*tasks):
+                            if data:
+                                all_places.extend(data.get("laeresteder", []))
+                                pages_fetched += 1
 
     except Exception as e:
         logger.error(f"Failed to communicate with Lærepladsen API: {e}")
         return [], []
 
-    logger.info(f"Lærepladsen API returned {len(all_places)} total learning places across {total_pages} pages")
+    # De-duplicate places (the same company can appear under multiple specialer).
+    unique_places: dict[str, dict] = {}
+    for place in all_places:
+        key = str(place.get("pnr") or place.get("cvr") or place.get("navn") or "")
+        if key in unique_places:
+            _merge_place(unique_places[key], place)
+        else:
+            unique_places[key] = place
+    all_places = list(unique_places.values())
 
-    # Filter for Region Midtjylland employers & extract active postings
+    logger.info(
+        f"Lærepladsen API returned {len(all_places)} unique learning places "
+        f"across {pages_fetched} pages / {len(TARGET_SPECIALTIES)} specialer"
+    )
+
+    # Filter for target-region employers & extract active postings
     accredited_places = []
     seen_opslag_ids = set()
 
     for place in all_places:
         region = place.get("region", "")
         postal = str(place.get("postnummer", ""))
-        is_in_region = ("midt" in region.lower()) or (postal in config.TARGET_POSTAL_CODES)
-        if not is_in_region:
+        if not _place_in_target_region(place):
             continue
 
         company_name = place.get("navn", "Ukendt")
         cvr = str(place.get("cvr", ""))
         city = place.get("kommune", "")
 
-        # 1. Process active postings (opslag)
-        postings = place.get("opslag", [])
-        for op in postings:
-            op_id = str(op.get("id", ""))
-            if not op_id or op_id in seen_opslag_ids:
-                continue
-            seen_opslag_ids.add(op_id)
-
-            title = op.get("titel") or op.get("beskrivelse", "")[:60] or "Datateknikerelev"
-            direct_url = op.get("kontaktHjemmeside")
-            job_url = direct_url if (direct_url and direct_url.startswith("http")) else f"https://laerepladsen.dk/elev/opslag/{op_id}"
-
-            # Enrich job object with direct contact details
-            if is_valid_job(title, postal, company_name, location=city, bypass_geo=True):
-                job_dict = format_job(
-                    job_id=f"laerepladsen_{op_id}",
-                    title=title,
-                    company=company_name,
-                    url=job_url,
-                    source="Laerepladsen"
-                )
-                job_dict["contact_person"] = op.get("kontaktPerson")
-                job_dict["contact_phone"] = op.get("kontaktTelefon")
-                job_dict["contact_email"] = op.get("kontaktEmail")
-                job_dict["deadline"] = op.get("ansoegningsfrist")
-                job_dict["start_date"] = op.get("ansaettelsesdato")
-                job_dict["description"] = op.get("beskrivelse")
-                active_jobs.append(job_dict)
-
-        # 2. Process Datatekniker accreditations
+        # 1. Collect relevant Datatekniker accreditations (It-supporter excluded)
         relevant_approvals = []
         for g in place.get("godkendelser", []):
             spec_name = g.get("speciale", {}).get("navn", "")
             spec_lower = spec_name.lower()
+            if "supporter" in spec_lower:
+                continue
             if "datatekniker" in spec_lower or "programmering" in spec_lower or "cybersikkerhed" in spec_lower:
                 relevant_approvals.append({
                     "id": g.get("id"),
@@ -127,6 +186,48 @@ async def fetch_laerepladsen_all(max_concurrency: int = 8) -> tuple[list[dict], 
                     "next_expiry": g.get("naesteUdloeb"),
                     "is_active": g.get("aktiv", True)
                 })
+
+        default_specialty = relevant_approvals[0]["specialty"] if relevant_approvals else ""
+
+        # 2. Process active postings (opslag)
+        postings = place.get("opslag", [])
+        for op in postings:
+            op_id = str(op.get("id", ""))
+            if not op_id or op_id in seen_opslag_ids:
+                continue
+
+            op_spec = ""
+            spec_field = op.get("speciale")
+            if isinstance(spec_field, dict):
+                op_spec = spec_field.get("navn", "") or ""
+
+            title = op.get("titel") or op.get("beskrivelse", "")[:60] or "Datateknikerelev"
+
+            # Drop It-supporter postings unless the title clearly signals a
+            # programming / software / datatekniker role.
+            if "supporter" in op_spec.lower() and job_priority(title) == 0:
+                continue
+
+            direct_url = op.get("kontaktHjemmeside")
+            job_url = direct_url if (direct_url and direct_url.startswith("http")) else f"https://laerepladsen.dk/elev/opslag/{op_id}"
+
+            if is_valid_job(title, postal, company_name, location=city, bypass_geo=True):
+                seen_opslag_ids.add(op_id)
+                job_dict = format_job(
+                    job_id=f"laerepladsen_{op_id}",
+                    title=title,
+                    company=company_name,
+                    url=job_url,
+                    source="Laerepladsen"
+                )
+                job_dict["specialty"] = op_spec or default_specialty
+                job_dict["contact_person"] = op.get("kontaktPerson")
+                job_dict["contact_phone"] = op.get("kontaktTelefon")
+                job_dict["contact_email"] = op.get("kontaktEmail")
+                job_dict["deadline"] = op.get("ansoegningsfrist")
+                job_dict["start_date"] = op.get("ansaettelsesdato")
+                job_dict["description"] = op.get("beskrivelse")
+                active_jobs.append(job_dict)
 
         if relevant_approvals:
             accredited_places.append({
@@ -141,7 +242,7 @@ async def fetch_laerepladsen_all(max_concurrency: int = 8) -> tuple[list[dict], 
                 "has_active_opslag": len(postings) > 0
             })
 
-    logger.info(f"Lærepladsen Radar identified {len(accredited_places)} Datatekniker accredited employers in Region Midtjylland and {len(active_jobs)} active opslag")
+    logger.info(f"Lærepladsen Radar identified {len(accredited_places)} Datatekniker accredited employers in the target regions and {len(active_jobs)} active opslag")
     return active_jobs, accredited_places
 
 
@@ -265,7 +366,7 @@ def detect_radar_alerts(accredited_places: list[dict], registry_state: dict) -> 
 def format_radar_telegram_message(alert: dict) -> str:
     """Format a crisp, actionable Telegram alert for accredited learning place insights."""
     name = alert.get("name", "Ukendt")
-    city = alert.get("city", "Midtjylland")
+    city = alert.get("city", "")
     postal = alert.get("postal_code", "")
     spec = alert.get("specialty", "Datatekniker")
     cvr = alert.get("cvr", "")
@@ -284,10 +385,11 @@ def format_radar_telegram_message(alert: dict) -> str:
     cvr_link = f"https://datacvr.virk.dk/enhed/virksomhed/{cvr}" if cvr else ""
     cvr_str = f'<a href="{cvr_link}">{cvr}</a>' if cvr_link else "N/A"
 
+    area_str = f"{postal} {city}".strip() or "Danmark"
     msg = f"""{header}
 
 🏢 <b>Virksomhed:</b> {name}
-📍 <b>Område:</b> {postal} {city}
+📍 <b>Område:</b> {area_str}
 🎓 <b>Speciale:</b> {spec}
 👥 <b>Aktive elever:</b> {igang}
 📅 <b>Næste udløb:</b> {expiry}

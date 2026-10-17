@@ -39,16 +39,27 @@ def with_error_screenshot(scraper_name: str):
         return wrapper
     return decorator
 
-NON_MIDTJYLLAND_PATTERN = re.compile(
-    r'\b(?:københavn|copenhagen|storkøbenhavn|hovedstaden|frederiksberg|nordsjælland|sjælland|roskilde|helsingør|hillerød|lyngby|ballerup|taastrup|glostrup|herlev|hvidovre|brøndby|albertslund|ishøj|greve|køge|fyn|odense|svendborg|middelfart|nyborg|bornholm)\b',
+# Regions that are OUT of scope even though their text may appear without a
+# postal code: Hovedstaden (Copenhagen), Sjælland, Bornholm. Note Funen
+# (Odense/Svendborg/Nyborg/Middelfart) IS in scope since Region Syddanmark
+# joined the target regions.
+NON_TARGET_REGION_PATTERN = re.compile(
+    r'\b(?:københavn|copenhagen|storkøbenhavn|hovedstaden|frederiksberg|nordsjælland|sjælland|roskilde|helsingør|hillerød|lyngby|ballerup|taastrup|glostrup|herlev|hvidovre|brøndby|albertslund|ishøj|greve|køge|bornholm)\b',
     re.IGNORECASE
 )
 
-def is_valid_job(title: str, postal_code: str, company: str = "", location: str = "", bypass_geo: bool = False) -> bool:
+# Backwards-compatible alias used by earlier versions / downstream imports.
+NON_MIDTJYLLAND_PATTERN = NON_TARGET_REGION_PATTERN
+
+def is_valid_job(title: str, postal_code: str, company: str = "", location: str = "", bypass_geo: bool = False, trusted_region: bool = False, extra_text: str = "") -> bool:
     title_lower = title.lower()
     company_lower = company.lower()
     location_lower = location.lower()
-    
+    # extra_text acts as supplementary POSITIVE signal ONLY (e.g. the Jobnet ad
+    # body). It is never used for exclusions — bodies often mention words like
+    # "support" for roles that are perfectly relevant.
+    extra_text_lower = re.sub(r"<[^>]+>", " ", (extra_text or "")).lower()
+
     # 1. Geolocation filtering
     is_in_region = bypass_geo
     if not is_in_region:
@@ -56,8 +67,8 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
             if postal_code in config.TARGET_POSTAL_CODES:
                 is_in_region = True
         else:
-            # Exclude explicit non-target regions (Copenhagen, Sjælland, Fyn)
-            if NON_MIDTJYLLAND_PATTERN.search(location_lower) or NON_MIDTJYLLAND_PATTERN.search(title_lower):
+            # Exclude explicit non-target regions (Copenhagen, Sjælland, Bornholm)
+            if NON_TARGET_REGION_PATTERN.search(location_lower) or NON_TARGET_REGION_PATTERN.search(title_lower):
                 return False
 
             if (config.CITY_PATTERN.search(location_lower) or
@@ -67,6 +78,12 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
                 "jylland" in location_lower or "danmark" in location_lower or
                 "remote" in location_lower or "hjemmearbejde" in location_lower):
                 is_in_region = True
+            elif trusted_region:
+                # The source search was already scoped to the target regions and
+                # the location is inconclusive (e.g. a small town not in our
+                # city list and no postal code) — trust the source filter
+                # rather than drop it.
+                is_in_region = True
                 
     if not is_in_region:
         return False
@@ -74,35 +91,62 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
     # 2. Hard exclusions (studentermedhjælper, unpaid internships, studiejob)
     if getattr(config, "HARD_EXCLUSION_PATTERN", None) and config.HARD_EXCLUSION_PATTERN.search(title_lower):
         return False
-        
-    # Support exclusion: only exclude pure IT-supporter if there is NO mention of datatekniker/programming/software
+
+    # Support exclusion: only exclude pure IT-support / helpdesk roles that have
+    # NO programming / software / datatekniker / security signal.
     if getattr(config, "SUPPORT_EXCLUSION_PATTERN", None) and config.SUPPORT_EXCLUSION_PATTERN.search(title_lower):
-        has_dev_or_datatekniker = any(
-            k in title_lower for k in ["datatekniker", "programm", "software", "udvikl", "cyber", "sikkerhed", "kode"]
-        )
+        has_dev_or_datatekniker = any(k in title_lower for k in config.ROLE_OVERRIDE_KEYWORDS)
         if not has_dev_or_datatekniker:
             return False
     elif config.EXCLUSION_PATTERN.search(title_lower):
         return False
-        
-    # 3. MUST be an elevplads / apprenticeship / trainee / datatekniker
-    is_elev = "datatekniker" in title_lower or any(e in title_lower for e in config.ELEV_KEYWORDS)
+
+    # 3. MUST be an elevplads / apprenticeship / trainee / datatekniker.
+    # If the title carries no elev/datatekniker signal, fall back to the ad
+    # body (extra_text) — e.g. a Jobnet ad titled just "Datatekniker" whose
+    # description explicitly says "elevplads"/"lærling".
+    title_is_elev = "datatekniker" in title_lower or any(e in title_lower for e in config.ELEV_KEYWORDS)
+    is_elev = title_is_elev
+    if not is_elev and extra_text_lower:
+        # Body text accepts ONLY explicit apprenticeship wording
+        # (ELEV_BODY_PATTERN): a plain substring scan is wrong because English
+        # words like "relevant" embed the Danish stem "elev", bodies mention
+        # "elever" (pupils) ubiquitously and "datatekniker" is usually a
+        # required EDUCATION, not an offer of an elevplads.
+        elev_body_pattern = getattr(config, "ELEV_BODY_PATTERN", None)
+        if elev_body_pattern is not None and elev_body_pattern.search(extra_text_lower):
+            is_elev = True
     if not is_elev:
         return False
+    elev_signal_from_body = is_elev and not title_is_elev
 
     # 4. Target Enterprise or Target IT Skill or General IT Role
     is_target_enterprise = any(ent in company_lower for ent in config.TARGET_ENTERPRISES)
     has_target_skill = bool(config.TARGET_KEYWORD_PATTERN.search(title_lower))
+    # "it-" with a word boundary: a plain substring check also matches inside
+    # words like "merit-elever" (m-e-r-i-t-) and wrongly gates them through.
+    has_it_prefix_token = bool(re.search(r'\bit-', title_lower))
     is_it_role = (
         "datatekniker" in title_lower or
         "it" in title_lower.split() or
-        "it-" in title_lower or
-        "data" in title_lower or
+        has_it_prefix_token or
         "software" in title_lower or
         "programm" in title_lower or
         "cyber" in title_lower or
         "apprentice" in title_lower or
-        "tech" in title_lower.split()
+        # A technical/specialisation word in the title plus an explicit
+        # apprenticeship signal in the body makes the role a plausible
+        # Datatekniker match (e.g. "Netværkstekniker" whose body explicitly
+        # offers en elevplads). Generic trades ("bagerlærling",
+        # "elektrikerlærling", school-teacher ads mentioning "elever") have
+        # none of these specialisation words and stay excluded.
+        (
+            elev_signal_from_body and (
+                any(k in title_lower for k in config.PROGRAMMING_KEYWORDS) or
+                any(k in title_lower for k in config.SECURITY_KEYWORDS) or
+                any(k in title_lower for k in config.INFRA_KEYWORDS)
+            )
+        )
     )
 
     if is_target_enterprise:
@@ -116,6 +160,31 @@ def is_valid_job(title: str, postal_code: str, company: str = "", location: str 
         return True
         
     return False
+
+# Ranking of a job title against the desired Datatekniker focus.
+# 3 = programming / software development (main focus)
+# 2 = cybersecurity / IT-security
+# 1 = Datatekniker (generic) / infrastructure & operations
+# 0 = other/generic IT
+PRIORITY_LABELS = {
+    3: "💻 Programmering",
+    2: "🔐 Cybersikkerhed",
+    1: "🖥️ Infrastruktur/Drift",
+    0: "ℹ️ IT",
+}
+
+
+def job_priority(title: str) -> int:
+    """Rank a job title by how well it matches the Datatekniker-Programmering focus."""
+    t = (title or "").lower()
+    if any(k in t for k in config.PROGRAMMING_KEYWORDS):
+        return 3
+    if any(k in t for k in config.SECURITY_KEYWORDS):
+        return 2
+    if "datatekniker" in t or any(k in t for k in config.INFRA_KEYWORDS):
+        return 1
+    return 0
+
 
 def format_job(job_id: str, title: str, company: str, url: str, source: str) -> dict:
     return {
@@ -145,58 +214,79 @@ async def scrape_jobnet(page: Page) -> list[dict]:
     for q in config.JOB_QUERIES:
         try:
             q_encoded = urllib.parse.quote(q)
-            js_code = f"""
-            async () => {{
-                const url = 'https://jobnet.dk/bff/FindJob/Search?resultsPerPage=100&pageNumber=1&orderType=BestMatch&searchString={q_encoded}';
-                const response = await fetch(url, {{
-                    headers: {{
-                        'x-csrf': '1',
-                        'accept': 'application/json'
+            # The BFF supports a server-side region filter via repeated
+            # `regions` params (verified live: regions=Midtjylland&regions=
+            # Nordjylland correctly unions both regions). Without it every
+            # query spans all of Denmark and a regional ad ranked beyond the
+            # first 100 results is silently lost. Scope every query to ALL
+            # target regions and page through the complete result set.
+            regions_param = "&".join(f"regions={r}" for r in config.TARGET_REGIONS)
+            for page_num in range(1, 6):
+                js_code = f"""
+                async () => {{
+                    const url = 'https://jobnet.dk/bff/FindJob/Search?resultsPerPage=100&pageNumber={page_num}&orderType=BestMatch&searchString={q_encoded}&{regions_param}';
+                    const response = await fetch(url, {{
+                        headers: {{
+                            'x-csrf': '1',
+                            'accept': 'application/json'
+                        }}
+                    }});
+                    if (!response.ok) {{
+                        return {{ jobAds: [], totalJobAdCount: 0 }};
                     }}
-                }});
-                if (!response.ok) {{
-                    return {{ jobAds: [] }};
+                    return await response.json();
                 }}
-                return await response.json();
-            }}
-            """
-            data = await page.evaluate(js_code)
-            postings = data.get("jobAds", [])
-            logger.info(f"Jobnet returned {len(postings)} postings for '{q}'")
-            
-            for item in postings:
-                job_id = str(item.get("jobAdId", ""))
-                if not job_id or job_id in seen_ids:
-                    continue
-                    
-                title = item.get("title", "") or item.get("occupation", "")
-                company = item.get("hiringOrgName", "Ukendt")
-                postal = str(item.get("postalCode", ""))
-                workplace = item.get("workplaceAddress", {})
-                location = ""
-                if isinstance(workplace, dict):
-                    if not postal:
-                        postal = str(workplace.get("postalCode", ""))
-                    location = str(workplace.get("city", ""))
-                if not location:
-                    location = str(item.get("city", ""))
-                
-                # Use external URL if available, otherwise construct standard Jobnet details URL
-                external_url = item.get("jobAdUrl", "")
-                url = external_url if (external_url and external_url.startswith("http")) else f"https://jobnet.dk/find-job/details/{job_id}"
+                """
+                data = await page.evaluate(js_code)
+                postings = data.get("jobAds", [])
+                regional_total = int(data.get("totalJobAdCount") or 0)
+                logger.info(f"Jobnet returned {len(postings)} regional postings for '{q}' (page {page_num}, total {regional_total})")
 
-                if is_valid_job(title, postal, company, location=location):
-                    seen_ids.add(job_id)
-                    jobs.append(format_job(
-                        job_id=job_id,
-                        title=title,
-                        company=company,
-                        url=url,
-                        source="Jobnet"
-                    ))
+                for item in postings:
+                    job_id = str(item.get("jobAdId", ""))
+                    if not job_id or job_id in seen_ids:
+                        continue
+
+                    title = item.get("title", "") or item.get("occupation", "")
+                    company = item.get("hiringOrgName", "Ukendt")
+                    postal = str(item.get("postalCode", ""))
+                    workplace = item.get("workplaceAddress", {})
+                    location = ""
+                    if isinstance(workplace, dict):
+                        if not postal:
+                            postal = str(workplace.get("postalCode", ""))
+                        location = str(workplace.get("city", ""))
+                    if not location:
+                        # Jobnet BFF exposes postalDistrictName / municipality, not "city"
+                        location = str(
+                            item.get("postalDistrictName")
+                            or item.get("municipality")
+                            or item.get("city")
+                            or ""
+                        )
+
+                    # Use external URL if available, otherwise construct standard Jobnet details URL
+                    external_url = item.get("jobAdUrl", "")
+                    url = external_url if (external_url and external_url.startswith("http")) else f"https://jobnet.dk/find-job/details/{job_id}"
+
+                    if is_valid_job(
+                        title, postal, company, location=location,
+                        extra_text=str(item.get("description", "") or "")
+                    ):
+                        seen_ids.add(job_id)
+                        jobs.append(format_job(
+                            job_id=job_id,
+                            title=title,
+                            company=company,
+                            url=url,
+                            source="Jobnet"
+                        ))
+
+                if not postings or len(postings) < 100 or page_num * 100 >= regional_total:
+                    break
         except Exception as e:
             logger.warning(f"Error querying Jobnet for '{q}': {e}")
-            
+
     return jobs
 
 @with_error_screenshot("IT-Jobbank")
@@ -205,74 +295,75 @@ async def scrape_itjobbank(page: Page) -> list[dict]:
     seen_job_ids = set()
     logger.info("Scraping IT-Jobbank...")
     for q in config.JOB_QUERIES:
-        for page_num in range(1, 4):  # Check up to 3 pages
-            url = f"https://www.it-jobbank.dk/jobsoegning/region-midtjylland?q={q}&page={page_num}"
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        for region_slug in getattr(config, "TARGET_REGION_SLUGS", ["region-midtjylland"]):
+            for page_num in range(1, 4):  # Check up to 3 pages
+                url = f"https://www.it-jobbank.dk/jobsoegning/{region_slug}?q={q}&page={page_num}"
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-            try:
-                await page.wait_for_selector(".jobsearch-result, .PaidJob, #jobsearch-app, .job-item, .result-item", timeout=8000)
-            except Exception:
-                pass
+                try:
+                    await page.wait_for_selector(".jobsearch-result, .PaidJob, #jobsearch-app, .job-item, .result-item", timeout=8000)
+                except Exception:
+                    pass
 
-            # Fast check if zero results using window.Stash or page text
-            hitcount = await page.evaluate("""() => {
-                try {
-                    return window.Stash?.['jobsearch/result_app']?.storeData?.searchResponse?.hitcount ?? null;
-                } catch(e) { return null; }
-            }""")
+                # Fast check if zero results using window.Stash or page text
+                hitcount = await page.evaluate("""() => {
+                    try {
+                        return window.Stash?.['jobsearch/result_app']?.storeData?.searchResponse?.hitcount ?? null;
+                    } catch(e) { return null; }
+                }""")
             
-            page_text = await page.inner_text("body")
-            if hitcount == 0 or "0 job" in page_text.lower() or "ingen ledige" in page_text.lower() or "ingen resultater" in page_text.lower():
-                if page_num == 1:
-                    logger.info(f"IT-Jobbank confirmed 0 results for query '{q}'.")
-                break
+                page_text = await page.inner_text("body")
+                if hitcount == 0 or "0 job" in page_text.lower() or "ingen ledige" in page_text.lower() or "ingen resultater" in page_text.lower():
+                    if page_num == 1:
+                        logger.info(f"IT-Jobbank confirmed 0 results for query '{q}'.")
+                    break
 
-            listings = await page.locator(".jobsearch-result, .PaidJob, .job-item, .result-item").all()
-            if not listings:
-                if page_num == 1:
-                    logger.warning(f"IT-Jobbank selectors not found for query '{q}' — site may have changed layout.")
-                    try:
-                        os.makedirs("screenshots", exist_ok=True)
-                        await page.screenshot(path=f"screenshots/empty_itjobbank_{q}.png", timeout=3000)
-                    except Exception as se:
-                        logger.debug(f"Screenshot failed for IT-Jobbank: {se}")
-                break
+                listings = await page.locator(".jobsearch-result, .PaidJob, .job-item, .result-item").all()
+                if not listings:
+                    if page_num == 1:
+                        logger.warning(f"IT-Jobbank selectors not found for query '{q}' — site may have changed layout.")
+                        try:
+                            os.makedirs("screenshots", exist_ok=True)
+                            await page.screenshot(path=f"screenshots/empty_itjobbank_{q}.png", timeout=3000)
+                        except Exception as se:
+                            logger.debug(f"Screenshot failed for IT-Jobbank: {se}")
+                    break
                 
-            logger.info(f"IT-Jobbank found {len(listings)} raw listings for query '{q}' on page {page_num}")
-            for listing in listings:
-                title_el = listing.locator("h4 a, h3 a, h2 a, .job-title a, a[data-click*='job-title']").first
-                if not await title_el.count():
-                    continue
-                title = (await title_el.inner_text()).strip()
-                href = await title_el.get_attribute("href") or ""
-                job_url = href if href.startswith("http") else f"https://www.it-jobbank.dk{href}"
+                logger.info(f"IT-Jobbank found {len(listings)} raw listings for query '{q}' on page {page_num}")
+                for listing in listings:
+                    title_el = listing.locator("h4 a, h3 a, h2 a, .job-title a, a[data-click*='job-title']").first
+                    if not await title_el.count():
+                        continue
+                    title = (await title_el.inner_text()).strip()
+                    href = await title_el.get_attribute("href") or ""
+                    job_url = href if href.startswith("http") else f"https://www.it-jobbank.dk{href}"
                 
-                if "?" in job_url and not "job=" in job_url:
-                    job_url = job_url.split("?")[0]
+                    if "?" in job_url and not "job=" in job_url:
+                        job_url = job_url.split("?")[0]
 
-                company_el = listing.locator(".company-name, .employer, .job-company, .jix_robotjob--company strong, a[data-click*='company-name']").first
-                company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
+                    company_el = listing.locator(".company-name, .employer, .job-company, .jix_robotjob--company strong, a[data-click*='company-name']").first
+                    company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
 
-                location_el = listing.locator(".job-location, .location, .area, .jix_robotjob--area").first
-                location_text = (await location_el.inner_text()).strip() if await location_el.count() else ""
+                    location_el = listing.locator(".job-location, .location, .area, .jix_robotjob--area").first
+                    location_text = (await location_el.inner_text()).strip() if await location_el.count() else ""
                 
-                postal_match = re.search(r'\b(\d{4})\b', location_text)
-                postal = postal_match.group(1) if postal_match else ""
+                    postal_match = re.search(r'\b(\d{4})\b', location_text)
+                    postal = postal_match.group(1) if postal_match else ""
 
-                if is_valid_job(title, postal, company, location_text):
-                    clean_c = normalize_company_name(company)
-                    clean_u = normalize_job_url(job_url)
-                    clean_t = re.sub(r'\s+', ' ', title.strip().lower())
-                    job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
-                    if job_id not in seen_job_ids:
-                        seen_job_ids.add(job_id)
-                        jobs.append(format_job(
-                            job_id=job_id,
-                            title=title,
-                            company=company,
-                            url=job_url,
-                            source="ITJobbank"
-                        ))
+                    if is_valid_job(title, postal, company, location_text, trusted_region=True):
+                        clean_c = normalize_company_name(company)
+                        clean_u = normalize_job_url(job_url)
+                        clean_t = re.sub(r'\s+', ' ', title.strip().lower())
+                        job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
+                        if job_id not in seen_job_ids:
+                            seen_job_ids.add(job_id)
+                            jobs.append(format_job(
+                                job_id=job_id,
+                                title=title,
+                                company=company,
+                                url=job_url,
+                                source="ITJobbank"
+                            ))
     return jobs
 
 async def scrape_thehub() -> list[dict]:
@@ -345,130 +436,158 @@ async def scrape_jobindex(page: Page) -> list[dict]:
     seen_job_ids = set()
     logger.info("Scraping Jobindex...")
     for q in config.JOB_QUERIES:
-        for page_num in range(1, 4): # check up to 3 pages
-            url = f"https://www.jobindex.dk/jobsoegning/it/midtjylland?q={q}&page={page_num}"
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            try:
-                # PaidJob is the primary class used in Jobindex SSR rendering
-                await page.wait_for_selector(".PaidJob, .jobsearch-result", timeout=8000)
-            except Exception as e:
-                # Distinguish "no results" from "site changed layout"
-                page_text = await page.inner_text("body")
-                if "ingen resultater" in page_text.lower() or "0 job" in page_text.lower() or "ingen ledige" in page_text.lower():
-                    if page_num == 1:
-                        logger.info(f"Jobindex confirmed 0 results for query '{q}'.")
-                else:
-                    if page_num == 1:
-                        logger.warning(f"Jobindex selectors not found for query '{q}' — site may have changed layout. Error: {e}")
-                        try:
-                            os.makedirs("screenshots", exist_ok=True)
-                            await page.screenshot(path=f"screenshots/empty_jobindex_{q}.png", timeout=3000)
-                        except Exception as se:
-                            logger.debug(f"Screenshot failed for Jobindex: {se}")
-                break
-                
-            listings = await page.locator(".PaidJob, .jobsearch-result").all()
-            if not listings:
-                break
-                
-            for listing in listings:
-                title_el = listing.locator("h4 a, h3 a, .job-title a").first
-                if not await title_el.count():
-                    continue
-                    
-                title = await title_el.inner_text()
-                job_url: Optional[str] = await title_el.get_attribute("href")
-                if not job_url:
-                    continue
-                
-                if job_url and "?" in job_url:
-                    job_url = job_url.split("?")[0]
-                
-                company = "Ukendt"
-                company_el = listing.locator(".jix_robotjob--company strong, .company-name, [class*='company'] strong").first
-                if await company_el.count():
-                    company = await company_el.inner_text()
-                    
-                # Safely check for area element count to avoid 30s timeout
-                area_el = listing.locator(".jix_robotjob--area, .area").first
-                postal = ""
-                location_text = ""
-                if await area_el.count() > 0:
-                    location_text = await area_el.inner_text()
-                    postal_match = re.search(r'\b(\d{4})\b', location_text)
-                    postal = postal_match.group(1) if postal_match else ""
-                
-                if is_valid_job(title, postal, company, location_text):
-                    clean_c = normalize_company_name(company)
-                    clean_u = normalize_job_url(job_url)
-                    clean_t = re.sub(r'\s+', ' ', title.strip().lower())
-                    job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
-                    if job_id not in seen_job_ids:
-                        seen_job_ids.add(job_id)
-                        jobs.append(format_job(
-                            job_id=job_id,
-                            title=title,
-                            company=company,
-                            url=job_url,
-                            source="Jobindex"
-                        ))
-    return jobs
-
-async def scrape_elevplads() -> list[dict]:
-
-    jobs = []
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-    
-    client_kwargs: dict[str, Any] = {"timeout": 20.0, "follow_redirects": True}
-    if config.PROXY_URL:
-        client_kwargs["proxy"] = config.PROXY_URL
-        
-    try:
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            for q in config.JOB_QUERIES:
+        for region_slug in getattr(config, "TARGET_REGION_SLUGS", ["region-midtjylland"]):
+            for page_num in range(1, 4): # check up to 3 pages
+                url = f"https://www.jobindex.dk/jobsoegning/it/{region_slug}?q={q}&page={page_num}"
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 try:
-                    logger.info(f"Scraping Elevplads.dk for '{q}'...")
-                    api_url = "https://elevplads.dk/api/posts/get-vacancies"
-                    params: dict[str, str | int] = {
-                        "query": q,
-                        "future_only": "false",
-                        "page": 1,
-                        "sort": "recommended"
-                    }
-                    resp = await client.get(api_url, params=params, headers=headers)
-                    if resp.status_code != 200:
-                        logger.warning(f"Elevplads.dk API returned {resp.status_code} for query '{q}'")
+                    # PaidJob is the primary class used in Jobindex SSR rendering
+                    await page.wait_for_selector(".PaidJob, .jobsearch-result", timeout=8000)
+                except Exception as e:
+                    # Distinguish "no results" from "site changed layout"
+                    page_text = await page.inner_text("body")
+                    if "ingen resultater" in page_text.lower() or "0 job" in page_text.lower() or "ingen ledige" in page_text.lower():
+                        if page_num == 1:
+                            logger.info(f"Jobindex confirmed 0 results for query '{q}'.")
+                    else:
+                        if page_num == 1:
+                            logger.warning(f"Jobindex selectors not found for query '{q}' — site may have changed layout. Error: {e}")
+                            try:
+                                os.makedirs("screenshots", exist_ok=True)
+                                await page.screenshot(path=f"screenshots/empty_jobindex_{q}.png", timeout=3000)
+                            except Exception as se:
+                                logger.debug(f"Screenshot failed for Jobindex: {se}")
+                    break
+                
+                listings = await page.locator(".PaidJob, .jobsearch-result").all()
+                if not listings:
+                    break
+                
+                for listing in listings:
+                    title_el = listing.locator("h4 a, h3 a, .job-title a").first
+                    if not await title_el.count():
                         continue
-                        
-                    data = resp.json()
-                    posts = data.get("posts", [])
-                    logger.info(f"Elevplads.dk returned {len(posts)} posts for query '{q}'")
                     
-                    for post in posts:
-                        title = post.get("title", "")
-                        company = post.get("company_name", "") or "Ukendt"
-                        location = post.get("working_place", "")
-                        job_id = str(post.get("id", ""))
-                        link = post.get("link", "")
-                        url = f"https://elevplads.dk{link}" if link else "https://elevplads.dk/find-elevplads"
-                        
-                        postal_match = re.search(r'\b(\d{4})\b', location)
+                    title = await title_el.inner_text()
+                    job_url: Optional[str] = await title_el.get_attribute("href")
+                    if not job_url:
+                        continue
+                
+                    if job_url and "?" in job_url:
+                        job_url = job_url.split("?")[0]
+                
+                    company = "Ukendt"
+                    company_el = listing.locator(
+                        ".jix-toolbar-top__company a, .jix-toolbar-top__company, "
+                        ".jix_robotjob--company strong, .company-name, [class*='company'] strong"
+                    ).first
+                    if await company_el.count():
+                        company = (await company_el.inner_text()).strip() or "Ukendt"
+                    
+                    # Safely check for area element count to avoid 30s timeout
+                    area_el = listing.locator(".jix_robotjob--area, .area").first
+                    postal = ""
+                    location_text = ""
+                    if await area_el.count() > 0:
+                        location_text = await area_el.inner_text()
+                        postal_match = re.search(r'\b(\d{4})\b', location_text)
                         postal = postal_match.group(1) if postal_match else ""
-                        
-                        if is_valid_job(title, postal, company, location):
+                
+                    if is_valid_job(title, postal, company, location_text, trusted_region=True):
+                        clean_c = normalize_company_name(company)
+                        clean_u = normalize_job_url(job_url)
+                        clean_t = re.sub(r'\s+', ' ', title.strip().lower())
+                        job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
+                        if job_id not in seen_job_ids:
+                            seen_job_ids.add(job_id)
                             jobs.append(format_job(
                                 job_id=job_id,
                                 title=title,
                                 company=company,
-                                url=url,
-                                source="Elevplads"
+                                url=job_url,
+                                source="Jobindex"
                             ))
-                except Exception as e:
-                    logger.error(f"Error in elevplads scraper for query '{q}': {e}")
-                    
+    return jobs
+
+async def scrape_elevplads() -> list[dict]:
+    """Scrape Elevplads.dk.
+
+    The portal's free-text search is unreliable (e.g. "datatekniker" returns 0
+    results), so we download the full vacancy feed once and filter locally.
+    This guarantees no relevant posting is missed because of weak API matching.
+    """
+    jobs = []
+    seen_ids = set()
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    client_kwargs: dict[str, Any] = {"timeout": 20.0, "follow_redirects": True}
+    if config.PROXY_URL:
+        client_kwargs["proxy"] = config.PROXY_URL
+
+    api_url = "https://elevplads.dk/api/posts/get-vacancies"
+    page_size = 15
+    max_pages = 60
+
+    try:
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            base_params = {"query": "", "future_only": "false", "sort": "recommended"}
+
+            first = await client.get(api_url, params={**base_params, "page": 1}, headers=headers)
+            if first.status_code != 200:
+                logger.warning(f"Elevplads.dk API returned {first.status_code}")
+                return []
+
+            first_data = first.json()
+            posts = list(first_data.get("posts", []))
+            total = int(first_data.get("post_count") or 0)
+            total_pages = min(max(1, (total + page_size - 1) // page_size), max_pages)
+            logger.info(f"Elevplads.dk reports {total} vacancies across {total_pages} pages")
+
+            sem = asyncio.Semaphore(6)
+
+            async def fetch_page(pg: int) -> list[dict]:
+                async with sem:
+                    try:
+                        r = await client.get(api_url, params={**base_params, "page": pg}, headers=headers)
+                        if r.status_code == 200:
+                            return r.json().get("posts", [])
+                        logger.warning(f"Elevplads.dk page {pg} returned {r.status_code}")
+                    except Exception as e:
+                        logger.warning(f"Error fetching Elevplads.dk page {pg}: {e}")
+                    return []
+
+            if total_pages > 1:
+                tasks = [fetch_page(p) for p in range(2, total_pages + 1)]
+                for page_posts in await asyncio.gather(*tasks):
+                    posts.extend(page_posts)
+
+        logger.info(f"Elevplads.dk returned {len(posts)} total vacancies")
+        for post in posts:
+            job_id = str(post.get("id", ""))
+            if not job_id or job_id in seen_ids:
+                continue
+            seen_ids.add(job_id)
+
+            title = post.get("title", "")
+            company = post.get("company_name", "") or "Ukendt"
+            location = post.get("working_place", "")
+            link = post.get("link", "")
+            url = f"https://elevplads.dk{link}" if link else "https://elevplads.dk/find-elevplads"
+
+            postal_match = re.search(r'\b(\d{4})\b', location)
+            postal = postal_match.group(1) if postal_match else ""
+
+            if is_valid_job(title, postal, company, location):
+                jobs.append(format_job(
+                    job_id=job_id,
+                    title=title,
+                    company=company,
+                    url=url,
+                    source="Elevplads"
+                ))
         return jobs
     except Exception as e:
         logger.error(f"Error in Elevplads scraper: {e}")
@@ -479,31 +598,41 @@ async def scrape_techjob(page: Page) -> list[dict]:
     """Scrape specialized tech jobs and apprenticeships from TechJob.dk (Ingeniøren / Version2)."""
     jobs = []
     logger.info("Scraping TechJob.dk...")
-    for q in ["elev", "lærling", "datatekniker", "softwareudvikler"]:
+    # TechJob.dk is Ingeniøren's job board. Its content search (/sog?query=)
+    # searches editorial articles, NOT jobs, so it always returned zero results.
+    # Real job listings live under /jobs (paginated). We iterate the most recent
+    # pages and let is_valid_job keep only genuine elevplads / apprenticeship roles.
+    for page_num in range(0, 6):
         try:
-            url = f"https://techjob.dk/sog?query={urllib.parse.quote(q)}"
+            url = f"https://techjob.dk/jobs?page={page_num}"
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            
-            try:
-                await page.wait_for_selector(".job-card, .search-result, article, .job-item, .views-row", timeout=8000)
-            except Exception:
-                continue
 
-            cards = await page.locator(".job-card, .search-result, article, .job-item, .views-row").all()
+            try:
+                await page.wait_for_selector("article, .job-item, .views-row", timeout=8000)
+            except Exception:
+                break
+
+            cards = await page.locator("article, .job-item, .views-row").all()
+            if not cards:
+                break
+
             for card in cards:
-                title_el = card.locator("h2 a, h3 a, h4 a, .job-title a, a[href*='/job/']").first
+                title_el = card.locator(".job-title a, h2 a, h3 a, h4 a, a[href*='/job/']").first
                 if not await title_el.count():
                     continue
                 title = (await title_el.inner_text()).strip()
                 href = await title_el.get_attribute("href") or ""
                 job_url = href if href.startswith("http") else f"https://techjob.dk{href}"
 
-                company_el = card.locator(".company, .company-name, [class*='company']").first
+                company_el = card.locator(
+                    ".additional-info--company a, .additional-info--company, "
+                    ".company, .company-name, [class*='company']"
+                ).first
                 company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
 
-                loc_el = card.locator(".location, .city, [class*='location'], .area").first
+                loc_el = card.locator(".additional-info--location, .location, .city, [class*='location'], .area").first
                 location_text = (await loc_el.inner_text()).strip() if await loc_el.count() else ""
-                
+
                 postal_match = re.search(r'\b(\d{4})\b', location_text)
                 postal = postal_match.group(1) if postal_match else ""
 
@@ -520,8 +649,8 @@ async def scrape_techjob(page: Page) -> list[dict]:
                         source="TechJob"
                     ))
         except Exception as e:
-            logger.warning(f"Error querying TechJob.dk for '{q}': {e}")
-            
+            logger.warning(f"Error querying TechJob.dk page {page_num}: {e}")
+
     return jobs
 
 async def scrape_linkedin() -> list[dict]:

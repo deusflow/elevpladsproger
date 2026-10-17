@@ -58,5 +58,10 @@
     { "name": "Knowit Denmark", "url": "https://www.knowit.dk/karriere/ledige-stillinger/" },
     { "name": "Novicell", "url": "https://www.novicell.com/dk/om-novicell/karriere/" },
     { "name": "Delegate", "url": "https://contextand.com/da/karriere-i-context/context-karriere" },
-    { "name": "Hesehus", "url": "https://www.hesehus.dk/da/karriere/ledige-stillinger" }
+    { "name": "Hesehus", "url": "https://www.hesehus.dk/da/karriere/ledige-stillinger" },
+    { "name": "Vejle Kommune", "url": "https://www.vejle.dk/job" },
+    { "name": "Kolding Kommune", "url": "https://www.kolding.dk/job" },
+    { "name": "Haderslev Kommune", "url": "https://www.haderslev.dk/job" },
+    { "name": "Middelfart Kommune", "url": "https://www.middelfart.dk/job" },
+    { "name": "Esbjerg Kommune", "url": "https://www.esbjergkommune.dk/job" }
 ]

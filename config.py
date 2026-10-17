@@ -39,12 +39,29 @@ PROXY_URL = os.getenv("PROXY_URL")
 # Application Specific Configuration
 DB_FILE = "jobs_db.json"
 TARGET_COMPANIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "target_companies.json")
-# Covers all Region Midtjylland postal codes plus key regional hubs like Billund (LEGO HQ 7190)
-TARGET_POSTAL_CODES = (
-    set(map(str, range(6900, 7000))) |
-    set(map(str, range(7130, 7200))) |
-    set(map(str, range(7270, 8000))) |
-    set(map(str, range(8000, 9000)))
+
+# Geographic scope: search ALL of Jutland + Funen (Region Midtjylland, Region
+# Nordjylland and Region Syddanmark) while still excluding Zealand/Copenhagen
+# and Bornholm (postal codes 1000-4999 / 37xx).
+TARGET_REGIONS = ["Midtjylland", "Nordjylland", "Syddanmark"]
+
+# URL slugs used by Jobindex (jobsoegning/it/<slug>) and IT-Jobbank
+# (jobsoegning/<slug>) — verified live, both sites use the same scheme.
+TARGET_REGION_SLUGS = ["region-midtjylland", "region-nordjylland", "region-syddanmark"]
+
+# Postal ranges: Danish postal codes are geographically ordered. 5000-9999
+# covers exactly Fyn (Region Syddanmark) + all of Jutland (the three target
+# regions). Anything from Zealand/Hovedstaden (1000-4999) is excluded.
+TARGET_REGION_POSTAL_RANGES = [
+    (5000, 6000),   # Region Syddanmark – Fyn & Langeland (Odense 5000, Svendborg 5700, ...)
+    (6000, 7000),   # Sønderjylland (Kolding 6000, Esbjerg 6700, Varde 6800) + west-Midtjylland
+    (7000, 9000),   # Vejle 7100, Billund 7190, Herning 7400, Viborg 8800, Aarhus 8000, ...
+    (9000, 10000),  # Region Nordjylland – Aalborg 9000, Hjørring 9800, Skagen 9990, ...
+]
+TARGET_POSTAL_CODES = set(
+    str(code)
+    for start, end in TARGET_REGION_POSTAL_RANGES
+    for code in range(start, end)
 )
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -113,8 +130,10 @@ De bedste hilsner
 Oleh Reznychenko 
 """
 
-MIDTJYLLAND_CITIES = [
-    # Major Cities
+# Cities / area names accepted as "in scope" when a listing has no postal code.
+# Covers Region Midtjylland, Region Nordjylland and Region Syddanmark.
+TARGET_CITIES = [
+    # Major Cities – Midtjylland
     "aarhus", "randers", "silkeborg", "horsens", "herning", 
     "viborg", "holstebro", "skive", "ikast", "brande", 
     "odder", "hinnerup", "skanderborg", "bjerringbro", 
@@ -128,18 +147,41 @@ MIDTJYLLAND_CITIES = [
     "åbyhøj", "aabyhøj", "aabyhoej", "egå", "egaa", "mårslet", "maarslet",
     "beder", "malling", "solbjerg", "skødstrup", "skoedstrup", "sabro", "trige",
     
-    # Region and General Midtjylland terms
+    # Region Nordjylland
+    "aalborg", "nørresundby", "norresundby", "hjørring", "hjorring",
+    "frederikshavn", "skagen", "sindal", "sæby", "saeby", "brønderslev",
+    "bronderslev", "dronninglund", "hirtshals", "løkken", "loekken",
+    "aars", "hobro", "hadsund", "støvring", "stovring", "farsø",
+    "thisted", "hanstholm", "nykøbing m", "nykøbing mors", "hurup",
+    "vendsyssel", "himmerland", "nordjylland", "north jutland",
+    
+    # Region Syddanmark – Fyn
+    "odense", "svendborg", "nyborg", "middelfart", "assens", "faaborg",
+    "fyn", "funen", "nordfyn", "sydfyn", "langeland", "bogense",
+    
+    # Region Syddanmark – Southern Jutland
+    "vejle", "kolding", "fredericia", "haderslev", "aabenraa",
+    "sønderborg", "sonderborg", "gråsten", "graasten", "padborg", "tønder",
+    "tonder", "ribe", "vejen", "varde", "oksbøl", "oksbol", "esbjerg",
+    "rødekro", "roedekro", "christiansfeld", "nordborg", "broager",
+    "sydjylland", "south jutland", "sønderjylland", "sonderjylland", "syddanmark",
+    
+    # General region terms
     "midtjylland", "østjylland", "oestjylland", "vestjylland", "nordvestjylland",
     "hele landet", "jylland", "remote", "hjemmearbejde"
 ]
+
+# Backwards-compatible alias (older code/tests refer to the Midtjylland list).
+MIDTJYLLAND_CITIES = TARGET_CITIES
 
 # Strict role keywords
 # Datatekniker - Programmering, Software & Cybersecurity
 TARGET_KEYWORDS = [
     "programmering", "cybersikkerhed", "it-sikkerhed", "cyber security",
-    "cybersecurity", "software", "developer", "udvikler", "udvikling",
-    "datatekniker", "fullstack", "frontend", "backend", "cloud",
-    "devops", "kodning", "data engineering", "programming"
+    "cybersecurity", "software", "developer", "udvikler", "udviklerelev",
+    "softwareudvikling", "webudvikling", "appudvikling", "datatekniker",
+    "datafaglig", "fullstack", "frontend", "backend", "cloud", "devops",
+    "kodning", "data engineering", "programming"
 ]
 
 # We want to be sure it's an apprenticeship/elevplads (Danish & English variants)
@@ -162,6 +204,49 @@ EXCLUDE_KEYWORDS = [
     "ulønnet"
 ]
 
+# ---------------------------------------------------------------------------
+# Role specialisation classification
+# ---------------------------------------------------------------------------
+# The project tracks the "Data- og kommunikationsuddannelsen" (Datatekniker)
+# family, EXCLUDING the It-supporter specialisation, with the main focus on
+# Datatekniker - Programmering. These lists drive both filtering and ranking.
+
+# Top priority: programming / software development
+# NOTE: these are matched as substrings (see scrapers.job_priority) so that
+# forms like "Programmørelev" or "Softwareudvikler" are recognised.
+PROGRAMMING_KEYWORDS = [
+    "programm", "software", "developer", "fullstack", "full-stack",
+    "frontend", "front-end", "backend", "back-end", "webudvikl", "app-udvikl",
+    "kodning", "kode", "data engineer", "database", "sql", "python", "c#",
+    ".net", "java", "typescript",
+    # Strong Danish compound-only stems: bare "udvikl" would wrongly rank ANY
+    # ad with the generic Danish verb "udvikle" (e.g. "Vil du være med til at
+    # udvikle skoleledergruppen?") as programming, so keep the technical/
+    # elev compounds explicitly instead.
+    "udviklerelev", "softwareudvikling", "webudvikling", "appudvikling",
+    "software udvikling",
+]
+
+# Secondary focus: cybersecurity / IT-security (still a Datatekniker speciale)
+SECURITY_KEYWORDS = [
+    "cyber", "sikkerhed", "security", "infosec", "penetration", "pentest",
+    "ethical hack", "hacking",
+]
+
+# Lower priority: Datatekniker infrastructure / operations
+INFRA_KEYWORDS = [
+    "infrastruktur", "infrastructure", "drift", "netværk", "netvaerk",
+    "network", "server", "cloud", "virtualisering", "virtualization",
+    "sysadmin", "systemadministrator", "devops", "data center", "datacenter",
+]
+
+# If a title contains any of these substrings, a "support"-like word does NOT
+# disqualify it (e.g. "Elev til IT-support og softwareudvikling").
+ROLE_OVERRIDE_KEYWORDS = [
+    "datatekniker", "programm", "software", "udvikl", "cyber", "sikkerhed",
+    "kode", "developer", "security",
+]
+
 TARGET_ENTERPRISES = ["arla", "eurowind", "thise mejeri"]
 
 JOB_QUERIES = [
@@ -172,13 +257,53 @@ JOB_QUERIES = [
     "software apprentice", "it apprentice", "developer apprentice", "apprentice software"
 ]
 
+# Word-boundary aware pattern for matching apprenticeship signals in AD BODIES
+# (scrapers.is_valid_job extra_text). PILOT USE ONLY in titles: titles are
+# matched as plain substrings, but bodies contain many words that must NOT
+# create an apprenticeship signal:
+#   - English "relevant" embeds the Danish stem "elev" (r-e-l-e-v-a-n-t).
+#   - Danish "elever"/"eleverne" describes a school's pupils — virtually every
+#     school/municipal/teacher ad mentions them without offering an elevplads.
+#   - "datatekniker" in a body usually lists a REQUIRED education for a regular
+#     senior role, not an offer of an apprenticeship.
+# So body scans only accept explicit apprenticeship wording. Titles are short
+# and curated, so the substring list (ELEV_KEYWORDS) stays in play there.
+    # NOTE: bare "trainee" is deliberately NOT a body signal: English benefit
+    # sections mention "grants for trainees" for regular senior roles. A real
+    # English-language trainee vacancy carries "trainee" in its TITLE instead.
+ELEV_BODY_KEYWORDS = [
+    "elevplads", "elevpladserne", "lærlingeplads", "lærlingepladser",
+    "lærlingekontrakt", "lærlingeforhold", "lærlingekontoret",
+    "læreansættelse", "lærekontrakt", "elevkontrakt", "elevstilling",
+    "apprentice", "apprenticeship",
+    "voksenelev", "voksenlærling", "skoleoplæring", "oplæringsvirksomhed",
+    "datateknikerelev",
+]
+
 # Precompiled Regex Patterns for High Performance
 import re
-CITY_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, MIDTJYLLAND_CITIES)) + r')\b')
+CITY_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, TARGET_CITIES)) + r')\b')
 EXCLUSION_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, EXCLUDE_KEYWORDS)) + r')\b')
-SUPPORT_EXCLUSION_PATTERN = re.compile(r'\b(?:supporter|supporttekniker|helpdesk|servicedesk)\b', re.IGNORECASE)
+# NOTE: "\bsupport" also matches "supporter", "supporttekniker", "supporting" etc.
+# so pure support/helpdesk/service-desk roles are reliably caught. This is the
+# core "Datatekniker except IT-support" requirement.
+SUPPORT_EXCLUSION_PATTERN = re.compile(
+    r'\b(?:support|helpdesk|service\s*desk|servicedesk|brugerstøtte)', re.IGNORECASE
+)
 HARD_EXCLUSION_PATTERN = re.compile(r'\b(?:studiejob|studentermedhjælper|ulønnet praktikant|ulønnet)\b', re.IGNORECASE)
 TARGET_KEYWORD_PATTERN = re.compile(r'\b(?:' + '|'.join(map(re.escape, TARGET_KEYWORDS)) + r')\b')
+
+# Word-boundary aware variant of the body keywords above. Most body keywords
+# get a leading word boundary plus a small set of Danish inflection suffixes
+# (elevpladsen, lærlingepladser, apprentices, trainees ...). The stems
+# "elevplads" and "lærlingeplads" allow ANY continuation, because only Danish
+# apprenticeship vocabulary forms compounds with them (elevpladskandidat ...).
+def _dk_body_keyword(keyword: str) -> str:
+    if keyword in ("elevplads", "lærlingeplads", "elevkontrakt"):
+        return r'\b' + re.escape(keyword) + r'\w*\b'
+    return r'\b' + re.escape(keyword) + r'(?:ernes|erne|erens|ens|ene|en|es|er|e|s)?\b'
+
+ELEV_BODY_PATTERN = re.compile('|'.join(_dk_body_keyword(k) for k in ELEV_BODY_KEYWORDS))
 
 # Curated High-Value IT, Engineering, Architecture, Hardware & Danish Tech RSS Feeds
 RSS_FEEDS = {

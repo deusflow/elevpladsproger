@@ -172,6 +172,53 @@ class TestLaerepladsenRadar(unittest.TestCase):
         self.assertEqual(len(accredited), 1)
         self.assertEqual(accredited[0]["name"], "Mercantec Viborg Partner")
 
+    @patch("laerepladsen_radar.httpx.AsyncClient")
+    def test_specialty_scoped_query_excludes_it_supporter(self, mock_client_cls):
+        """The API must be queried per Datatekniker speciale (never '-1') and
+        It-supporter accreditations/postings must be dropped."""
+        import asyncio
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "antalSider": 1,
+            "laeresteder": [{
+                "navn": "Mixed Tech ApS",
+                "cvr": "55667788",
+                "postnummer": "8000",
+                "kommune": "Aarhus",
+                "region": "Region Midtjylland",
+                "opslag": [
+                    {"id": "op-support", "titel": "IT-supporter elev", "speciale": {"navn": "It-supporter"}},
+                    {"id": "op-prog", "titel": "Datateknikerelev - programmering", "speciale": {"navn": "Datatekniker med speciale i programmering"}},
+                ],
+                "godkendelser": [
+                    {"id": "g-support", "speciale": {"navn": "It-supporter"}, "antalEleverIgang": 1},
+                    {"id": "g-prog", "speciale": {"navn": "Datatekniker med speciale i programmering"}, "antalEleverIgang": 0},
+                ],
+            }]
+        }
+
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_resp
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+        jobs, accredited = asyncio.run(laerepladsen_radar.fetch_laerepladsen_all(max_concurrency=2))
+
+        # Only the programming posting survives
+        self.assertEqual([j["title"] for j in jobs], ["Datateknikerelev - programmering"])
+
+        # It-supporter accreditation is excluded
+        specs = [a["specialty"] for p in accredited for a in p["approvals"]]
+        self.assertNotIn("It-supporter", specs)
+        self.assertIn("Datatekniker med speciale i programmering", specs)
+
+        # Every request must target a specific speciale, never the "-1" catch-all
+        urls = [c.args[0] for c in mock_client.get.call_args_list]
+        self.assertTrue(urls)
+        self.assertTrue(all("/-1" not in u for u in urls))
+        self.assertTrue(any("Datatekniker%20med%20speciale%20i%20programmering" in u for u in urls))
+
 
 if __name__ == "__main__":
     unittest.main()

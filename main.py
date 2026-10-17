@@ -433,11 +433,14 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
         deadline_line = f"⏳ <b>Ansøgningsfrist:</b> {escape_html(job['deadline'])}\n" if job.get("deadline") else ""
 
         match_score = job.get('match_score')
+        priority = scrapers.job_priority(job.get('title', ''))
+        priority_line = f"{scrapers.PRIORITY_LABELS.get(priority, '')}\n" if priority >= 1 else ""
         if match_score is not None:
             city = escape_html(job.get('match_city', 'Ukendt'))
             reason = escape_html(job.get('match_reason', ''))
             job_str = (f"🎯 <b>{match_score}% Match</b> | {city}\n"
                        f"🔹 <b>{title}</b>\n"
+                       f"{priority_line}"
                        f"🏢 {company} ({source})\n"
                        f"🎓 <i>{accreditation_badge}</i>\n"
                        f"{restructuring_badge}"
@@ -447,6 +450,7 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
                        f"🔗 <a href=\"{url}\">Ansøg her</a>\n\n")
         else:
             job_str = (f"🔹 <b>{title}</b>\n"
+                       f"{priority_line}"
                        f"🏢 {company} ({source})\n"
                        f"🎓 <i>{accreditation_badge}</i>\n"
                        f"{restructuring_badge}"
@@ -825,6 +829,13 @@ async def main():
                 except Exception as e:
                     logger.warning(f"Error checking accreditation for {job.get('company')}: {e}")
                     job["is_approved"] = False
+
+            # Prioritise the user's focus: Datatekniker - Programmering first,
+            # then Cybersikkerhed, then Infrastruktur/other IT.
+            new_jobs.sort(
+                key=lambda j: (scrapers.job_priority(j.get("title", "")), j.get("match_score") or 0),
+                reverse=True,
+            )
             
         import cycle_predictor
         cycle_alerts = cycle_predictor.analyze_and_predict(jobs_state)
