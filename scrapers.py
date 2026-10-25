@@ -8,7 +8,7 @@ import hashlib
 from datetime import datetime, timezone
 import httpx
 try:
-    from patchright.async_api import Page
+    from patchright.async_api import Page  # type: ignore
 except ImportError:
     try:
         from playwright.async_api import Page  # type: ignore

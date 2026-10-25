@@ -7,7 +7,7 @@ import re
 import httpx
 from datetime import datetime, timezone
 try:
-    from patchright.async_api import async_playwright
+    from patchright.async_api import async_playwright  # type: ignore
 except ImportError:
     try:
         from playwright.async_api import async_playwright  # type: ignore
@@ -16,7 +16,7 @@ except ImportError:
 
 import random
 try:
-    from playwright_stealth import stealth_async
+    from playwright_stealth import stealth_async  # type: ignore
 except ImportError:
     async def stealth_async(page): pass
 

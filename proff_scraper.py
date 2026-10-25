@@ -1,11 +1,11 @@
 import logging
 from typing import Any
 try:
-    from playwright_stealth import stealth_async
+    from playwright_stealth import stealth_async  # type: ignore
 except ImportError:
     async def stealth_async(page): pass
 try:
-    from patchright.async_api import BrowserContext
+    from patchright.async_api import BrowserContext  # type: ignore
 except ImportError:
     try:
         from playwright.async_api import BrowserContext  # type: ignore
