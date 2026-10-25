@@ -44,7 +44,7 @@ class TestScrapersContract(unittest.TestCase):
 
         async def run_test():
             with patch("httpx.AsyncClient.get", return_value=MockResponse()):
-                jobs = await company_scrapers.try_teamtailor_api("Test Co", "https://example.com/jobs")
+                jobs = await company_scrapers.try_teamtailor_api("Test Co", "https://testco.teamtailor.com/jobs")
                 self.assertIsInstance(jobs, list)
 
         asyncio.run(run_test())

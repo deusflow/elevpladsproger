@@ -6,7 +6,7 @@ import re
 import hashlib
 from typing import Optional, Any
 from datetime import datetime, timezone
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, urlsplit
 import httpx
 from bs4 import BeautifulSoup
 try:
@@ -250,7 +250,10 @@ async def _scrape_company_with_browser_retry(context: BrowserContext, url: str) 
 
 async def try_teamtailor_api(company_name: str, base_url: str) -> Optional[list[dict]]:
     """Fast, direct JSON API extraction for Teamtailor-powered Danish career sites."""
-    clean_url = base_url.rstrip("/")
+    parsed = urlsplit(base_url)
+    clean_path = parsed.path.rstrip("/")
+    clean_url = f"{parsed.scheme}://{parsed.netloc}{clean_path}" if parsed.netloc else base_url.rstrip("/")
+    
     if not clean_url.endswith("/jobs"):
         api_candidates = [f"{clean_url}/jobs.json", f"{clean_url}.json", f"{clean_url}/jobs/jobs.json"]
     else:
@@ -265,12 +268,29 @@ async def try_teamtailor_api(company_name: str, base_url: str) -> Optional[list[
                 resp = await client.get(api_url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
                 if resp.status_code == 200 and "application/json" in resp.headers.get("content-type", ""):
                     data = resp.json()
-                    items = data.get("items", [])
+                    if not isinstance(data, dict):
+                        continue
+                    items = data.get("items")
+                    if not isinstance(items, list):
+                        continue
+
+                    # Validate Teamtailor authenticity:
+                    # Must have items with title/url OR be verified Teamtailor by domain/headers
+                    is_tt_domain = "teamtailor.com" in base_url.lower() or "teamtailor" in resp.headers.get("server", "").lower()
+                    has_job_items = any(isinstance(i, dict) and ("title" in i or "url" in i) for i in items)
+                    
+                    if not is_tt_domain and not has_job_items:
+                        # Unknown non-Teamtailor domain returning empty or irrelevant JSON:
+                        # Skip candidate so browser crawler can inspect the real page
+                        continue
+
                     jobs = []
                     links = []
                     for item in items:
-                        title = item.get("title", "").strip()
-                        link = item.get("url", "").strip()
+                        if not isinstance(item, dict):
+                            continue
+                        title = str(item.get("title", "")).strip()
+                        link = str(item.get("url", "")).strip()
                         if title and link:
                             links.append({"text": title, "url": link})
                             if is_valid_job(title, "", company_name, "", bypass_geo=True):
@@ -285,7 +305,7 @@ async def try_teamtailor_api(company_name: str, base_url: str) -> Optional[list[
                                     url=link,
                                     source="TeamtailorAPI"
                                 ))
-                    structural_hash = hashlib.md5("|".join(sorted(str(i.get("id") or i.get("title", "")) for i in items)).encode()).hexdigest()
+                    structural_hash = hashlib.md5("|".join(sorted(str(i.get("id") or i.get("title", "")) for i in items if isinstance(i, dict))).encode()).hexdigest()
                     jobs.append({
                         "type": "hash",
                         "company": company_name,

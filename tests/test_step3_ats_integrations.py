@@ -140,6 +140,56 @@ class TestStep3ATSIntegrations(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_try_teamtailor_api_ignores_arbitrary_json_on_custom_domain(self):
+        """Non-Teamtailor domains returning generic or empty JSON should NOT hijack the scraper."""
+        class MockResp:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+            def json(self):
+                return {"status": "ok", "items": []}
+
+        async def run_test():
+            with patch("httpx.AsyncClient.get", return_value=MockResp()):
+                items = await company_scrapers.try_teamtailor_api("Custom Corp", "https://careers.custom-corp.dk")
+                self.assertIsNone(items)
+
+        asyncio.run(run_test())
+
+    def test_try_teamtailor_api_handles_query_parameters(self):
+        """URLs with query parameters or fragments should be cleaned properly before appending .json."""
+        api_response = {
+            "items": [
+                {
+                    "id": 999,
+                    "title": "Datatekniker elev",
+                    "url": "https://bankdata.teamtailor.com/jobs/999"
+                }
+            ]
+        }
+        requested_urls = []
+        class MockResp:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+            def json(self):
+                return api_response
+
+        async def fake_get(url, **kwargs):
+            requested_urls.append(url)
+            return MockResp()
+
+        async def run_test():
+            with patch("httpx.AsyncClient.get", side_effect=fake_get):
+                items = await company_scrapers.try_teamtailor_api(
+                    "Bankdata", "https://bankdata.teamtailor.com/jobs?department=it&loc=aarhus#openings"
+                )
+                self.assertIsNotNone(items)
+                # Verify that no requested URL contains '?department=it/jobs.json'
+                for req_url in requested_urls:
+                    self.assertNotIn("?department", req_url)
+                    self.assertTrue(req_url.endswith(".json"))
+
+        asyncio.run(run_test())
+
     def test_try_workday_api_extraction(self):
         """Workday JSON CXS API should parse postings for LEGO Group without Playwright."""
         api_response = {
