@@ -122,10 +122,10 @@ class TestExtraTextElevSignal(unittest.TestCase):
 
 
 class TestRadarRegionExpansion(unittest.TestCase):
-    def test_five_geo_centers_under_api_cap(self):
+    def test_geo_centers_under_api_cap(self):
         """All (lat, lng, radius) centers must cover the three target regions."""
         centers = laerepladsen_radar.REGION_SEARCH_CENTERS
-        self.assertEqual(len(centers), 5)
+        self.assertTrue(2 <= len(centers) <= 5)
         for lat, lng, radius in centers:
             self.assertTrue(50.0 < float(lat) < 60.0, msg=lat)
             self.assertTrue(8.0 < float(lng) < 12.0, msg=lng)

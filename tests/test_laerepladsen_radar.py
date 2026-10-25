@@ -219,6 +219,99 @@ class TestLaerepladsenRadar(unittest.TestCase):
         self.assertTrue(all("/-1" not in u for u in urls))
         self.assertTrue(any("Datatekniker%20med%20speciale%20i%20programmering" in u for u in urls))
 
+    def test_detect_new_accreditation_ignores_old_approvals(self):
+        """Historical accreditations (> 60 days ago) must not trigger new_accreditation alerts."""
+        accredited_places = [{
+            "name": "Old Tech ApS",
+            "cvr": "99990000",
+            "postal_code": "8000",
+            "city": "Aarhus",
+            "has_active_opslag": False,
+            "approvals": [{
+                "id": "app-old",
+                "specialty": "Datatekniker med speciale i programmering",
+                "active_students": 0,
+                "approved_date": "2020-01-01",
+                "next_expiry": None
+            }]
+        }]
+
+        alerts, updated = laerepladsen_radar.detect_radar_alerts(accredited_places, {})
+        # Should not alert on 5-year-old accreditation
+        self.assertEqual(len(alerts), 0)
+        # But should register the company in the registry
+        self.assertIn("99990000_app-old", updated)
+
+    def test_silent_baseline_initialization(self):
+        """When silent_baseline=True, no alerts are triggered even for new accreditations."""
+        recent_date = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
+        accredited_places = [{
+            "name": "Brand New Tech ApS",
+            "cvr": "11112222",
+            "postal_code": "8000",
+            "city": "Aarhus",
+            "has_active_opslag": False,
+            "approvals": [{
+                "id": "app-brand-new",
+                "specialty": "Datatekniker med speciale i programmering",
+                "active_students": 0,
+                "approved_date": recent_date,
+                "next_expiry": None
+            }]
+        }]
+
+        alerts, updated = laerepladsen_radar.detect_radar_alerts(
+            accredited_places,
+            {},
+            silent_baseline=True
+        )
+        self.assertEqual(len(alerts), 0)
+        self.assertIn("11112222_app-brand-new", updated)
+
+    def test_max_alerts_capping(self):
+        """Alerts should be capped at max_alerts, and unselected alerts should not be marked alerted."""
+        exp_date = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
+        accredited_places = []
+        existing_registry = {}
+        old_seen = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+
+        for i in range(10):
+            cvr = f"8888000{i}"
+            spec_key = f"{cvr}_app-{i}"
+            accredited_places.append({
+                "name": f"Tech {i} A/S",
+                "cvr": cvr,
+                "postal_code": "8000",
+                "city": "Aarhus",
+                "has_active_opslag": False,
+                "approvals": [{
+                    "id": f"app-{i}",
+                    "specialty": "Datatekniker med speciale i programmering",
+                    "active_students": 1,
+                    "approved_date": "2021-01-01",
+                    "next_expiry": exp_date
+                }]
+            })
+            existing_registry[spec_key] = {
+                "name": f"Tech {i} A/S",
+                "last_seen_at": old_seen,
+                "last_alerted_at": old_seen,
+                "active_students": 1,
+                "next_expiry": exp_date
+            }
+
+        alerts, updated = laerepladsen_radar.detect_radar_alerts(
+            accredited_places,
+            existing_registry,
+            max_alerts=3
+        )
+        self.assertEqual(len(alerts), 3)
+
+        # 3 companies alerted
+        alerted_count = sum(1 for v in updated.values() if v.get("last_alerted_at") != old_seen)
+        self.assertEqual(alerted_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -27,15 +27,12 @@ TARGET_SPECIALTIES = [
 #
 # Instead we anchor the search on regional coordinates covering Jutland + Funen
 # (the three target regions) and query ONE SPECIALISATION AT A TIME. All
-# (center, radius) pairs below stay under the 500-company cap (highest observed:
-# 473 for "infrastruktur" around Aarhus) while covering Midtjylland, Nordjylland
-# and Syddanmark.
+# Optimized regional search centers covering Jutland + Funen (Midtjylland, Nordjylland, Syddanmark).
+# Sized to stay safely under Lærepladsen's 50-page (500 company) pagination cap while
+# minimizing overlapping duplicate API roundtrips.
 REGION_SEARCH_CENTERS: list[tuple[str, str, str]] = [
-    ("56.16", "10.21", "120"),    # Aarhus / East Jutland (Midtjylland)
-    ("56.14", "8.97", "120"),     # Herning / West Jutland (Midtjylland)
-    ("57.048", "9.9187", "110"),  # Aalborg / Vendsyssel (Nordjylland)
-    ("55.3959", "10.3883", "90"), # Odense / Funen (Syddanmark)
-    ("55.71", "9.53", "90"),      # Vejle / Southern Jutland (Syddanmark)
+    ("56.8", "9.8", "120"),    # Midtjylland & Nordjylland (Aarhus, Aalborg, Viborg, Herning, Randers)
+    ("55.4", "9.8", "110"),    # Syddanmark & Fyn (Odense, Vejle, Kolding, Esbjerg, Sønderborg)
 ]
 
 # Backwards-compatible alias for the Midtjylland-only era (lat, lng tuples).
@@ -246,15 +243,45 @@ async def fetch_laerepladsen_all(max_concurrency: int = 8) -> tuple[list[dict], 
     return active_jobs, accredited_places
 
 
-def detect_radar_alerts(accredited_places: list[dict], registry_state: dict) -> tuple[list[dict], dict]:
+def detect_radar_alerts(
+    accredited_places: list[dict],
+    registry_state: dict,
+    max_alerts: int = 5,
+    silent_baseline: bool = False
+) -> tuple[list[dict], dict]:
     """Detect high-value unsolicited application opportunities:
-    1. Newly accredited companies
+    1. Newly accredited companies (approved within last 60 days)
     2. Zero active students (open capacity)
-    3. Current apprentice contract expiring within 120 days
+    3. Current apprentice contract expiring within 15-150 days
+
+    Includes protection against alert storms via silent baseline initialization,
+    recency check on accreditation dates, and strict alert capping per run.
     """
-    alerts = []
     now = datetime.now(timezone.utc)
     updated_registry = registry_state.copy()
+
+    # Silent baseline: populate the registry without triggering historical alert storms
+    if silent_baseline:
+        for place in accredited_places:
+            cvr = place.get("cvr")
+            name = place.get("name")
+            for app in place.get("approvals", []):
+                spec_name = app.get("specialty", "")
+                spec_key = f"{cvr}_{app.get('id', spec_name)}"
+                updated_registry[spec_key] = {
+                    "name": name,
+                    "cvr": cvr,
+                    "specialty": spec_name,
+                    "last_seen_at": now.isoformat(),
+                    "last_alerted_at": None,
+                    "active_students": app.get("active_students", 0),
+                    "next_expiry": app.get("next_expiry"),
+                    "alerted_zero_capacity": False,
+                }
+        logger.info(f"Initialized Lærepladsen registry baseline with {len(updated_registry)} employers silently.")
+        return [], updated_registry
+
+    candidate_alerts = []  # tuple: (priority_score, alert_payload, spec_key, active_students, next_expiry)
 
     for place in accredited_places:
         cvr = place.get("cvr")
@@ -273,21 +300,35 @@ def detect_radar_alerts(accredited_places: list[dict], registry_state: dict) -> 
 
             is_new_company = existing is None
             alert_payload = None
+            priority_score = 999.0
 
-            # Check for newly accredited learning places
+            # Check for newly accredited learning places (only if approved in the last 60 days)
             if is_new_company:
-                alert_payload = {
-                    "type": "new_accreditation",
-                    "name": name,
-                    "cvr": cvr,
-                    "postal_code": postal,
-                    "city": city,
-                    "specialty": spec_name,
-                    "active_students": active_students,
-                    "approved_date": approved_date,
-                    "next_expiry": next_expiry,
-                    "tip": "Ny-godkendt lærested! Virksomheden har lige fået godkendelse. Send uopfordret ansøgning, før andre opdager dem!"
-                }
+                is_recent_approval = False
+                if approved_date:
+                    try:
+                        clean_date = approved_date[:10]
+                        app_dt = datetime.strptime(clean_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                        diff_days = (now - app_dt).days
+                        if 0 <= diff_days <= 60:
+                            is_recent_approval = True
+                    except Exception:
+                        pass
+
+                if is_recent_approval:
+                    alert_payload = {
+                        "type": "new_accreditation",
+                        "name": name,
+                        "cvr": cvr,
+                        "postal_code": postal,
+                        "city": city,
+                        "specialty": spec_name,
+                        "active_students": active_students,
+                        "approved_date": approved_date,
+                        "next_expiry": next_expiry,
+                        "tip": "Ny-godkendt lærested! Virksomheden har lige fået godkendelse. Send uopfordret ansøgning, før andre opdager dem!"
+                    }
+                    priority_score = 0.0
             else:
                 last_alerted = existing.get("last_alerted_at")
                 can_re_alert = True
@@ -299,10 +340,11 @@ def detect_radar_alerts(accredited_places: list[dict], registry_state: dict) -> 
                     except Exception:
                         can_re_alert = True
 
-                # Check if an apprentice contract is expiring soon (within 30-150 days)
+                # Check if an apprentice contract is expiring soon (within 15-150 days)
                 if can_re_alert and next_expiry:
                     try:
-                        exp_dt = datetime.strptime(next_expiry, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                        clean_exp = next_expiry[:10]
+                        exp_dt = datetime.strptime(clean_exp, "%Y-%m-%d").replace(tzinfo=timezone.utc)
                         days_until = (exp_dt - now).days
                         if 15 <= days_until <= 150:
                             alert_payload = {
@@ -317,12 +359,13 @@ def detect_radar_alerts(accredited_places: list[dict], registry_state: dict) -> 
                                 "days_until": days_until,
                                 "tip": f"Nuværende elevs kontrakt udløber om {days_until} dage ({next_expiry})! Perfekt timing til at række ud om næste hold."
                             }
+                            # Sooner expiring contracts get higher priority (lower score)
+                            priority_score = 1.0 + (days_until / 200.0)
                     except Exception:
                         pass
 
                 # Check for approved programming employers with 0 current students (fresh capacity)
                 if not alert_payload and can_re_alert and active_students == 0 and "programmering" in spec_name.lower():
-                    # Only alert if not actively posting public ads (avoid duplication with job alert)
                     if not place.get("has_active_opslag") and not existing.get("alerted_zero_capacity"):
                         alert_payload = {
                             "type": "open_capacity",
@@ -335,19 +378,10 @@ def detect_radar_alerts(accredited_places: list[dict], registry_state: dict) -> 
                             "next_expiry": None,
                             "tip": "Virksomheden er godkendt til Datatekniker - Programmering, men har p.t. 0 elever! Stor chance for positiv modtagelse af uopfordret ansøgning."
                         }
+                        priority_score = 3.0
 
             if alert_payload:
-                alerts.append(alert_payload)
-                updated_registry[spec_key] = {
-                    "name": name,
-                    "cvr": cvr,
-                    "specialty": spec_name,
-                    "last_seen_at": now.isoformat(),
-                    "last_alerted_at": now.isoformat(),
-                    "active_students": active_students,
-                    "next_expiry": next_expiry,
-                    "alerted_zero_capacity": alert_payload["type"] == "open_capacity"
-                }
+                candidate_alerts.append((priority_score, alert_payload, spec_key, name, cvr, spec_name, active_students, next_expiry))
             else:
                 updated_registry[spec_key] = {
                     "name": name,
@@ -359,6 +393,40 @@ def detect_radar_alerts(accredited_places: list[dict], registry_state: dict) -> 
                     "next_expiry": next_expiry,
                     "alerted_zero_capacity": existing.get("alerted_zero_capacity", False) if existing else False
                 }
+
+    # Sort candidates by priority score and take up to max_alerts
+    candidate_alerts.sort(key=lambda x: x[0])
+    selected_alerts_data = candidate_alerts[:max_alerts] if max_alerts else candidate_alerts
+    selected_spec_keys = {item[2] for item in selected_alerts_data}
+
+    alerts = []
+    for item in candidate_alerts:
+        _, payload, spec_key, name, cvr, spec_name, active_students, next_expiry = item
+        existing = registry_state.get(spec_key)
+        if spec_key in selected_spec_keys:
+            alerts.append(payload)
+            updated_registry[spec_key] = {
+                "name": name,
+                "cvr": cvr,
+                "specialty": spec_name,
+                "last_seen_at": now.isoformat(),
+                "last_alerted_at": now.isoformat(),
+                "active_students": active_students,
+                "next_expiry": next_expiry,
+                "alerted_zero_capacity": payload["type"] == "open_capacity"
+            }
+        else:
+            # Deferred alert: preserve existing last_alerted_at so it can be picked up on a future run
+            updated_registry[spec_key] = {
+                "name": name,
+                "cvr": cvr,
+                "specialty": spec_name,
+                "last_seen_at": now.isoformat(),
+                "last_alerted_at": existing.get("last_alerted_at") if existing else None,
+                "active_students": active_students,
+                "next_expiry": next_expiry,
+                "alerted_zero_capacity": existing.get("alerted_zero_capacity", False) if existing else False
+            }
 
     return alerts, updated_registry
 

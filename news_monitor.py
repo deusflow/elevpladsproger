@@ -564,7 +564,7 @@ Return JSON ONLY:
 }}"""
 
     if config.GEMINI_API_KEY:
-        for g_model in ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]:
+        for g_model in ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             payload: dict[str, Any] = {
                 "contents": [{"parts": [{"text": prompt}]}],
@@ -593,7 +593,7 @@ Return JSON ONLY:
             url = "https://api.groq.com/openai/v1/chat/completions"
             headers = {"Authorization": f"Bearer {config.GROQ_API_KEY}", "Content-Type": "application/json"}
             payload = {
-                "model": "openai/gpt-oss-20b",
+                "model": "llama-3.1-8b-instant",
                 "messages": [
                     {"role": "system", "content": "You are a JSON fact-checker. Output ONLY valid JSON."},
                     {"role": "user", "content": prompt}
@@ -787,10 +787,9 @@ Return ONLY valid JSON:
     # 1. Try Gemini API first if key is available
     if config.GEMINI_API_KEY:
         gemini_models = [
-            "gemini-3.8-flash",
-            "gemini-3.1-flash-lite",
             "gemini-2.5-flash",
-            "gemini-2.5-flash-lite"
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash"
         ]
         for g_model in gemini_models:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
@@ -839,7 +838,7 @@ Return ONLY valid JSON:
 
     # 2. Fallback to Groq API if Gemini is unavailable or fails
     if config.GROQ_API_KEY:
-        models_to_try = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+        models_to_try = ["llama-3.3-70b-versatile", "qwen-2.5-32b", "llama-3.1-8b-instant"]
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {config.GROQ_API_KEY}",

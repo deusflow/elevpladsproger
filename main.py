@@ -377,11 +377,48 @@ def is_company_in_restructuring(company_name: str, restructuring_list: Optional[
 
 CHANGE_KEYWORDS = ("elev", "lærling", "datatekniker", "it-", "software", "praktik")
 
+NON_IT_CHANGE_EXCLUSIONS = (
+    "sosu", "social-", "sundhed", "sygeplej", "pædagog", "lærer", "skole",
+    "køkken", "ernæring", "mad", "rengøring", "serviceassistent",
+    "gartner", "vej og park", "handicap", "ældre", "pleje", "plejehjem",
+    "tandklinik", "lægesekretær", "kontor", "administration", "bogholder",
+    "jurist", "advokat", "sekretær", "fysioterapeut", "ergoterapeut",
+    "overlæge", "læge", "bioanalytiker", "jordemoder"
+)
+
+DIRECT_IT_KEYWORDS = (
+    "datatekniker", "it-supporter", "it supporter", "it-elev", "it elev",
+    "it-lærling", "it lærling", "software", "programmør", "programmer",
+    "udvikler", "developer", "informatik", "cybersikkerhed", "systemadministrator",
+    "cloud engineer", "devops"
+)
+
+APPRENTICE_TERMS = ("elev", "lærling", "praktik", "trainee")
+
 
 def is_relevant_change_link(text: str, url: str) -> bool:
-    """Check if a new career page link matches IT / apprenticeship keywords."""
+    """Check if a new career page link matches IT / apprenticeship keywords,
+    strictly filtering out municipal non-IT postings (SOSU, pædagog, kontor, etc.).
+    """
     content = f"{text} {url}".lower()
-    return any(kw in content for kw in CHANGE_KEYWORDS)
+
+    # Check direct IT keywords first (e.g. "Datateknikerelev", "Software trainee", "Ansøg her" -> "/datatekniker")
+    has_direct_it = any(kw in content for kw in DIRECT_IT_KEYWORDS)
+
+    # Exclude routine public sector non-IT titles unless explicit direct IT keyword is present
+    if any(ex in content for ex in NON_IT_CHANGE_EXCLUSIONS):
+        if not has_direct_it:
+            return False
+
+    if has_direct_it:
+        return True
+
+    # If it has general apprenticeship terms (elev, lærling, praktik), require IT context
+    if any(app in content for app in APPRENTICE_TERMS):
+        if re.search(r'\b(it|data|tech|software|system|cloud|web|kode)\b|it-|tech-', content):
+            return True
+
+    return False
 
 
 async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle_alerts: Optional[list[str]] = None, news_digest: str = "", restructuring_companies: Optional[list[str]] = None, radar_alerts: Optional[list[dict]] = None):
@@ -580,7 +617,13 @@ async def main():
             
             # Detect Radar opportunities (unsolicited applications, open capacity, expiring contracts)
             laeresteder_registry = jobs_state.get("laeresteder_registry", {})
-            radar_alerts, updated_registry = laerepladsen_radar.detect_radar_alerts(accredited_places, laeresteder_registry)
+            is_silent_init = not bool(laeresteder_registry)
+            radar_alerts, updated_registry = laerepladsen_radar.detect_radar_alerts(
+                accredited_places,
+                laeresteder_registry,
+                max_alerts=5,
+                silent_baseline=is_silent_init
+            )
             jobs_state["laeresteder_registry"] = updated_registry
             jobs_state_updated = True
         except Exception as e:
@@ -654,7 +697,7 @@ async def main():
                 
                 dynamic_companies = [
                     c for c in jobs_state.get("dynamic_companies", [])
-                    if c.get("url") and c["url"].strip().startswith("http")
+                    if c.get("url") and c["url"].strip().startswith("http") and c.get("fail_count", 0) < 3
                 ]
 
                 # Run all browser-based scrapers in parallel
@@ -839,6 +882,8 @@ async def main():
             
         import cycle_predictor
         cycle_alerts = cycle_predictor.analyze_and_predict(jobs_state)
+        if cycle_alerts:
+            jobs_state_updated = True
         
         active_restructuring = jobs_state.get("restructuring_companies", [])
         try:

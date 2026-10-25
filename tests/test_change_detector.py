@@ -20,11 +20,15 @@ class TestChangeDetector(unittest.TestCase):
         self.assertTrue(is_relevant_change_link("Ansøg her", "https://firm.dk/datatekniker-stilling"))
         self.assertTrue(is_relevant_change_link("Elevplads som programmør", "https://lego.com/job/5"))
 
-        # Negative cases: routine municipal / public sector hiring (doctors, nurses, teachers)
+        # Negative cases: routine municipal / public sector hiring (doctors, nurses, teachers, non-IT apprentices)
         self.assertFalse(is_relevant_change_link("Sygeplejerske til Akutafdelingen", "https://rm.dk/sygeplejerske"))
         self.assertFalse(is_relevant_change_link("Pædagog til Børnehuset Solstrålen", "https://holstebro.dk/paedagog"))
         self.assertFalse(is_relevant_change_link("Lærer til matematik og fysik", "https://horsens.dk/laerer"))
         self.assertFalse(is_relevant_change_link("Social- og sundhedsassistent", "https://lemvig.dk/sosu"))
+        self.assertFalse(is_relevant_change_link("Social- og sundhedsassistent elev", "https://horsens.dk/sosu-elev"))
+        self.assertFalse(is_relevant_change_link("Pædagogisk assistent elev", "https://holstebro.dk/paedagog-elev"))
+        self.assertFalse(is_relevant_change_link("Kontorelev med speciale i administration", "https://lemvig.dk/kontorelev"))
+        self.assertFalse(is_relevant_change_link("Ernæringsassistent elev", "https://ikast-brande.dk/mad-elev"))
         self.assertFalse(is_relevant_change_link("Køkkenmedhjælper søges", "https://au.dk/koekken"))
         self.assertFalse(is_relevant_change_link("Overlæge i kardiologi", "https://rm.dk/overlaege"))
 

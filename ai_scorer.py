@@ -86,7 +86,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
     
     # 1. Try Google Gemini models
     if config.GEMINI_API_KEY:
-        gemini_models = ["gemini-2.5-flash-lite", "gemini-2.0-flash"]
+        gemini_models = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]
         for g_model in gemini_models:
             gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             gemini_payload = {
@@ -123,7 +123,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
             "Authorization": f"Bearer {config.GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
-        groq_models = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
+        groq_models = ["llama-3.3-70b-versatile", "qwen-2.5-32b", "llama-3.1-8b-instant"]
         for model_id in groq_models:
             payload = {
                 "model": model_id,
@@ -164,7 +164,14 @@ async def enrich_jobs_with_ai(new_jobs: list[dict]):
     
     async def process_job(job):
         try:
-            text = await fetch_job_text(job["url"])
+            raw_desc = (job.get("description") or "").strip()
+            if raw_desc:
+                # Strip HTML tags if present
+                clean_desc = re.sub(r'<[^>]+>', ' ', raw_desc)
+                text = re.sub(r'\s+', ' ', clean_desc).strip()[:8000]
+            else:
+                text = await fetch_job_text(job["url"])
+
             score_data = await get_match_score(job["title"], job["company"], text)
             if score_data:
                 job["match_score"] = score_data.get("score")

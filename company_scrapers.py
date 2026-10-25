@@ -126,14 +126,14 @@ Page Text:
         except Exception as e:
             logger.warning(f"Gemini exception for {company_name}: {e}, switching immediately to Groq...")
 
-    # 2. Fast Groq fallback chain: openai/gpt-oss-20b -> qwen/qwen3.8-27b
+    # 2. Fast Groq fallback chain: llama-3.3-70b-versatile -> llama-3.1-8b-instant
     if config.GROQ_API_KEY:
         groq_url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {config.GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
-        for model_id in ["openai/gpt-oss-20b", "qwen/qwen3.8-27b"]:
+        for model_id in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
             payload = {
                 "model": model_id,
                 "messages": [
@@ -291,7 +291,8 @@ async def try_teamtailor_api(company_name: str, base_url: str) -> Optional[list[
                         "company": company_name,
                         "url": base_url,
                         "hash": str(structural_hash),
-                        "links": links
+                        "links": links,
+                        "llm_verified": True
                     })
                     if any(j.get("type") != "hash" for j in jobs):
                         logger.info(f"Teamtailor API found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")
@@ -412,7 +413,8 @@ async def try_emply_api(company_name: str, base_url: str) -> Optional[list[dict]
                     "company": company_name,
                     "url": base_url,
                     "hash": str(structural_hash),
-                    "links": links
+                    "links": links,
+                    "llm_verified": True
                 })
                 if any(j.get("type") != "hash" for j in jobs):
                     logger.info(f"Emply Data found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")
@@ -471,7 +473,8 @@ async def try_workday_api(company_name: str, base_url: str) -> Optional[list[dic
                     "company": company_name,
                     "url": base_url,
                     "hash": str(structural_hash),
-                    "links": links
+                    "links": links,
+                    "llm_verified": True
                 })
                 if any(j.get("type") != "hash" for j in jobs):
                     logger.info(f"Workday API found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")
@@ -533,7 +536,8 @@ async def try_signatur_api(company_name: str, base_url: str) -> Optional[list[di
                 "company": company_name,
                 "url": base_url,
                 "hash": str(structural_hash),
-                "links": links
+                "links": links,
+                "llm_verified": True
             })
             if any(j.get("type") != "hash" for j in jobs):
                 logger.info(f"Signatur direct scraper found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")
@@ -590,7 +594,8 @@ async def try_talentsoft_api(company_name: str, base_url: str) -> Optional[list[
                 "company": company_name,
                 "url": base_url,
                 "hash": str(structural_hash),
-                "links": links
+                "links": links,
+                "llm_verified": True
             })
             if any(j.get("type") != "hash" for j in jobs):
                 logger.info(f"TalentSoft direct scraper found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")
@@ -610,8 +615,23 @@ async def scrape_company(context: BrowserContext, company: dict, sem: asyncio.Se
 
     # Bounded by semaphore to prevent rate-limit flooding across all targets
     async with sem:
-        # Fast path: Check direct ATS APIs (Teamtailor, Emply, Workday, Signatur, TalentSoft)
-        for ats_fn in (try_teamtailor_api, try_emply_api, try_workday_api, try_signatur_api, try_talentsoft_api):
+        # Fast path: Route directly by known ATS domain to eliminate hundreds of wasted HTTP roundtrips
+        url_lower = url.lower()
+        if "teamtailor.com" in url_lower or "career.teamtailor" in url_lower:
+            candidate_ats = (try_teamtailor_api,)
+        elif "emply.com" in url_lower or "emply.net" in url_lower or "au.dk" in url_lower:
+            candidate_ats = (try_emply_api,)
+        elif "myworkdayjobs.com" in url_lower or "lego" in name.lower():
+            candidate_ats = (try_workday_api,)
+        elif "portal.signatur.dk" in url_lower:
+            candidate_ats = (try_signatur_api,)
+        elif "talent-soft.com" in url_lower or "talentsoft" in url_lower:
+            candidate_ats = (try_talentsoft_api,)
+        else:
+            # Custom vanity domain: test Teamtailor first (used by many Danish tech firms), then Emply
+            candidate_ats = (try_teamtailor_api, try_emply_api)
+
+        for ats_fn in candidate_ats:
             try:
                 res = await ats_fn(name, url)
                 if res is not None:

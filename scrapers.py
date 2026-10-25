@@ -289,81 +289,95 @@ async def scrape_jobnet(page: Page) -> list[dict]:
 
     return jobs
 
+# Consolidated query stems for browser aggregators (Jobindex & IT-Jobbank).
+# Stemming on Jobindex/IT-Jobbank automatically covers inflections:
+# "datatekniker" covers datatekniker, datateknikerelev, datateknikerlærling
+# "apprentice" covers software apprentice, it apprentice, developer apprentice
+AGGREGATOR_QUERIES = [
+    "datatekniker",
+    "it-elev",
+    "programmørelev",
+    "software elev",
+    "it-lærling",
+    "elevplads it",
+    "apprentice"
+]
+
+
 @with_error_screenshot("IT-Jobbank")
 async def scrape_itjobbank(page: Page) -> list[dict]:
     jobs = []
     seen_job_ids = set()
     logger.info("Scraping IT-Jobbank...")
-    for q in config.JOB_QUERIES:
-        for region_slug in getattr(config, "TARGET_REGION_SLUGS", ["region-midtjylland"]):
-            for page_num in range(1, 4):  # Check up to 3 pages
-                url = f"https://www.it-jobbank.dk/jobsoegning/{region_slug}?q={q}&page={page_num}"
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    for q in AGGREGATOR_QUERIES:
+        for page_num in range(1, 4):  # Check up to 3 pages
+            url = f"https://www.it-jobbank.dk/jobsoegning?q={q}&page={page_num}"
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
-                try:
-                    await page.wait_for_selector(".jobsearch-result, .PaidJob, #jobsearch-app, .job-item, .result-item", timeout=8000)
-                except Exception:
-                    pass
+            try:
+                await page.wait_for_selector(".jobsearch-result, .PaidJob, #jobsearch-app, .job-item, .result-item", timeout=8000)
+            except Exception:
+                pass
 
-                # Fast check if zero results using window.Stash or page text
-                hitcount = await page.evaluate("""() => {
-                    try {
-                        return window.Stash?.['jobsearch/result_app']?.storeData?.searchResponse?.hitcount ?? null;
-                    } catch(e) { return null; }
-                }""")
+            # Fast check if zero results using window.Stash or page text
+            hitcount = await page.evaluate("""() => {
+                try {
+                    return window.Stash?.['jobsearch/result_app']?.storeData?.searchResponse?.hitcount ?? null;
+                } catch(e) { return null; }
+            }""")
+        
+            page_text = await page.inner_text("body")
+            if hitcount == 0 or "0 job" in page_text.lower() or "ingen ledige" in page_text.lower() or "ingen resultater" in page_text.lower():
+                if page_num == 1:
+                    logger.info(f"IT-Jobbank confirmed 0 results for query '{q}'.")
+                break
+
+            listings = await page.locator(".jobsearch-result, .PaidJob, .job-item, .result-item").all()
+            if not listings:
+                if page_num == 1:
+                    logger.warning(f"IT-Jobbank selectors not found for query '{q}' — site may have changed layout.")
+                    try:
+                        os.makedirs("screenshots", exist_ok=True)
+                        await page.screenshot(path=f"screenshots/empty_itjobbank_{q}.png", timeout=3000)
+                    except Exception as se:
+                        logger.debug(f"Screenshot failed for IT-Jobbank: {se}")
+                break
             
-                page_text = await page.inner_text("body")
-                if hitcount == 0 or "0 job" in page_text.lower() or "ingen ledige" in page_text.lower() or "ingen resultater" in page_text.lower():
-                    if page_num == 1:
-                        logger.info(f"IT-Jobbank confirmed 0 results for query '{q}'.")
-                    break
+            logger.info(f"IT-Jobbank found {len(listings)} raw listings for query '{q}' on page {page_num}")
+            for listing in listings:
+                title_el = listing.locator("h4 a, h3 a, h2 a, .job-title a, a[data-click*='job-title']").first
+                if not await title_el.count():
+                    continue
+                title = (await title_el.inner_text()).strip()
+                href = await title_el.get_attribute("href") or ""
+                job_url = href if href.startswith("http") else f"https://www.it-jobbank.dk{href}"
+            
+                if "?" in job_url and not "job=" in job_url:
+                    job_url = job_url.split("?")[0]
 
-                listings = await page.locator(".jobsearch-result, .PaidJob, .job-item, .result-item").all()
-                if not listings:
-                    if page_num == 1:
-                        logger.warning(f"IT-Jobbank selectors not found for query '{q}' — site may have changed layout.")
-                        try:
-                            os.makedirs("screenshots", exist_ok=True)
-                            await page.screenshot(path=f"screenshots/empty_itjobbank_{q}.png", timeout=3000)
-                        except Exception as se:
-                            logger.debug(f"Screenshot failed for IT-Jobbank: {se}")
-                    break
-                
-                logger.info(f"IT-Jobbank found {len(listings)} raw listings for query '{q}' on page {page_num}")
-                for listing in listings:
-                    title_el = listing.locator("h4 a, h3 a, h2 a, .job-title a, a[data-click*='job-title']").first
-                    if not await title_el.count():
-                        continue
-                    title = (await title_el.inner_text()).strip()
-                    href = await title_el.get_attribute("href") or ""
-                    job_url = href if href.startswith("http") else f"https://www.it-jobbank.dk{href}"
-                
-                    if "?" in job_url and not "job=" in job_url:
-                        job_url = job_url.split("?")[0]
+                company_el = listing.locator(".company-name, .employer, .job-company, .jix_robotjob--company strong, a[data-click*='company-name']").first
+                company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
 
-                    company_el = listing.locator(".company-name, .employer, .job-company, .jix_robotjob--company strong, a[data-click*='company-name']").first
-                    company = (await company_el.inner_text()).strip() if await company_el.count() else "Ukendt"
+                location_el = listing.locator(".job-location, .location, .area, .jix_robotjob--area").first
+                location_text = (await location_el.inner_text()).strip() if await location_el.count() else ""
+            
+                postal_match = re.search(r'\b(\d{4})\b', location_text)
+                postal = postal_match.group(1) if postal_match else ""
 
-                    location_el = listing.locator(".job-location, .location, .area, .jix_robotjob--area").first
-                    location_text = (await location_el.inner_text()).strip() if await location_el.count() else ""
-                
-                    postal_match = re.search(r'\b(\d{4})\b', location_text)
-                    postal = postal_match.group(1) if postal_match else ""
-
-                    if is_valid_job(title, postal, company, location_text, trusted_region=True):
-                        clean_c = normalize_company_name(company)
-                        clean_u = normalize_job_url(job_url)
-                        clean_t = re.sub(r'\s+', ' ', title.strip().lower())
-                        job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
-                        if job_id not in seen_job_ids:
-                            seen_job_ids.add(job_id)
-                            jobs.append(format_job(
-                                job_id=job_id,
-                                title=title,
-                                company=company,
-                                url=job_url,
-                                source="ITJobbank"
-                            ))
+                if is_valid_job(title, postal, company, location_text):
+                    clean_c = normalize_company_name(company)
+                    clean_u = normalize_job_url(job_url)
+                    clean_t = re.sub(r'\s+', ' ', title.strip().lower())
+                    job_id = hashlib.md5(f"{clean_c}_{clean_t}_{clean_u}".encode()).hexdigest()
+                    if job_id not in seen_job_ids:
+                        seen_job_ids.add(job_id)
+                        jobs.append(format_job(
+                            job_id=job_id,
+                            title=title,
+                            company=company,
+                            url=job_url,
+                            source="ITJobbank"
+                        ))
     return jobs
 
 async def scrape_thehub() -> list[dict]:
@@ -435,7 +449,7 @@ async def scrape_jobindex(page: Page) -> list[dict]:
     jobs = []
     seen_job_ids = set()
     logger.info("Scraping Jobindex...")
-    for q in config.JOB_QUERIES:
+    for q in AGGREGATOR_QUERIES:
         for region_slug in getattr(config, "TARGET_REGION_SLUGS", ["region-midtjylland"]):
             for page_num in range(1, 4): # check up to 3 pages
                 url = f"https://www.jobindex.dk/jobsoegning/it/{region_slug}?q={q}&page={page_num}"
