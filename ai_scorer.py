@@ -86,7 +86,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
     
     # 1. Try Google Gemini models
     if config.GEMINI_API_KEY:
-        gemini_models = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]
+        gemini_models = ["gemini-3.8-flash", "gemini-3.1-flash-lite"]
         for g_model in gemini_models:
             gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
             gemini_payload = {
@@ -123,7 +123,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
             "Authorization": f"Bearer {config.GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
-        groq_models = ["llama-3.3-70b-versatile", "qwen-2.5-32b", "llama-3.1-8b-instant"]
+        groq_models = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
         for model_id in groq_models:
             payload = {
                 "model": model_id,

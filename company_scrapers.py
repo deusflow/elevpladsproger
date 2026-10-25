@@ -95,9 +95,9 @@ Page Text:
 {truncated_text}
 """
     
-    # 1. Fast Gemini extraction: gemini-2.5-flash-lite
+    # 1. Fast Gemini extraction: gemini-3.8-flash
     if getattr(config, "GEMINI_API_KEY", None):
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key={config.GEMINI_API_KEY}"
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={config.GEMINI_API_KEY}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"responseMimeType": "application/json"}
@@ -117,23 +117,23 @@ Page Text:
                         if title and is_valid_job(title, "", company_name, "", bypass_geo=True):
                             extracted.append({"title": title, "url": job_url})
                     if extracted:
-                        logger.info(f"Gemini (gemini-2.5-flash-lite) extracted {len(extracted)} IT elev jobs for {company_name}")
+                        logger.info(f"Gemini (gemini-3.8-flash) extracted {len(extracted)} IT elev jobs for {company_name}")
                     return extracted, True
                 elif resp.status_code in [429, 503]:
-                    logger.warning(f"Gemini 2.5-flash-lite status {resp.status_code} for {company_name}, switching immediately to Groq...")
+                    logger.warning(f"Gemini 3.8-flash status {resp.status_code} for {company_name}, switching immediately to Groq...")
                 else:
                     logger.warning(f"Gemini API error {resp.status_code} for {company_name}: {resp.text}")
         except Exception as e:
             logger.warning(f"Gemini exception for {company_name}: {e}, switching immediately to Groq...")
 
-    # 2. Fast Groq fallback chain: llama-3.3-70b-versatile -> llama-3.1-8b-instant
+    # 2. Fast Groq fallback chain: openai/gpt-oss-120b -> qwen/qwen3.8-27b -> openai/gpt-oss-20b -> llama-3.1-8b-instant
     if config.GROQ_API_KEY:
         groq_url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {config.GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
-        for model_id in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+        for model_id in ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]:
             payload = {
                 "model": model_id,
                 "messages": [
