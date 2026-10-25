@@ -10,7 +10,7 @@ from urllib.parse import urlparse, urljoin
 import httpx
 from bs4 import BeautifulSoup
 try:
-    from patchright.async_api import BrowserContext, Page
+    from patchright.async_api import BrowserContext, Page  # type: ignore
 except ImportError:
     try:
         from playwright.async_api import BrowserContext, Page  # type: ignore
@@ -22,7 +22,7 @@ from scrapers import format_job, is_valid_job
 from utils import normalize_job_url, normalize_company_name, extract_json_payload
 from tenacity import retry, stop_after_attempt, wait_fixed
 try:
-    from playwright_stealth import stealth_async
+    from playwright_stealth import stealth_async  # type: ignore
 except ImportError:
     async def stealth_async(page): pass
 
