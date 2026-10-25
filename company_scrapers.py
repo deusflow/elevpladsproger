@@ -393,7 +393,8 @@ async def try_emply_api(company_name: str, base_url: str) -> Optional[list[dict]
                         "company": company_name,
                         "url": base_url,
                         "hash": str(structural_hash),
-                        "links": links
+                        "links": links,
+                        "llm_verified": True
                     })
                     if any(j.get("type") != "hash" for j in jobs):
                         logger.info(f"Emply API found {len([j for j in jobs if j.get('type') != 'hash'])} elev jobs for {company_name}")

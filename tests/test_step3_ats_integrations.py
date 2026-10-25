@@ -64,6 +64,7 @@ class TestStep3ATSIntegrations(unittest.TestCase):
                 self.assertEqual(jobs[0]["source"], "EmplyAPI")
                 self.assertEqual(len(hashes), 1)
                 self.assertEqual(hashes[0]["company"], "Silkeborg Kommune")
+                self.assertTrue(hashes[0].get("llm_verified"))
 
         asyncio.run(run_test())
 
