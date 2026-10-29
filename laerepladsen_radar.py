@@ -433,14 +433,16 @@ def detect_radar_alerts(
 
 def format_radar_telegram_message(alert: dict) -> str:
     """Format a crisp, actionable Telegram alert for accredited learning place insights."""
-    name = alert.get("name", "Ukendt")
-    city = alert.get("city", "")
-    postal = alert.get("postal_code", "")
-    spec = alert.get("specialty", "Datatekniker")
-    cvr = alert.get("cvr", "")
-    igang = alert.get("active_students", 0)
-    expiry = alert.get("next_expiry") or "Ingen aktiv elev"
-    tip = alert.get("tip", "")
+    import html as html_lib
+    name = html_lib.escape(str(alert.get("name", "Ukendt")))
+    city = html_lib.escape(str(alert.get("city", "")))
+    postal = html_lib.escape(str(alert.get("postal_code", "")))
+    spec = html_lib.escape(str(alert.get("specialty", "Datatekniker")))
+    raw_cvr = str(alert.get("cvr") or "").strip()
+    cvr = html_lib.escape(raw_cvr)
+    igang = html_lib.escape(str(alert.get("active_students", 0)))
+    expiry = html_lib.escape(str(alert.get("next_expiry") or "Ingen aktiv elev"))
+    tip = html_lib.escape(str(alert.get("tip", "")))
 
     alert_type = alert.get("type")
     if alert_type == "new_accreditation":
@@ -450,8 +452,8 @@ def format_radar_telegram_message(alert: dict) -> str:
     else:
         header = "🎯 <b>LÆREPLADS RADAR: Ledig Kapacitet (Uopfordret)</b>"
 
-    cvr_link = f"https://datacvr.virk.dk/enhed/virksomhed/{cvr}" if cvr else ""
-    cvr_str = f'<a href="{cvr_link}">{cvr}</a>' if cvr_link else "N/A"
+    cvr_link = f"https://datacvr.virk.dk/enhed/virksomhed/{urllib.parse.quote(raw_cvr)}" if raw_cvr else ""
+    cvr_str = f'<a href="{html_lib.escape(cvr_link)}">{cvr}</a>' if cvr_link else "N/A"
 
     area_str = f"{postal} {city}".strip() or "Danmark"
     msg = f"""{header}

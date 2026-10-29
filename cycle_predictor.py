@@ -73,9 +73,10 @@ def analyze_and_predict(state: dict) -> list[str]:
                     company_lower = company.lower()
                     alert_key = f"hist_{company_lower}_{target_year}_{target_month}"
                     if not predictions_sent.get(alert_key) and company_lower not in alerted_companies:
+                        import html as html_lib
                         alerts.append(
                             f"💡 <b>Hiring Cycle Predictor (Historisk data)</b>\n"
-                            f"🏢 <b>{company}</b> slog en elevplads op i {month_name} i {discovered_dt.year}. "
+                            f"🏢 <b>{html_lib.escape(company)}</b> slog en elevplads op i {month_name} i {discovered_dt.year}. "
                             f"Hold ekstra øje med deres stillinger i den kommende måned!"
                         )
                         predictions_sent[alert_key] = True

@@ -97,14 +97,18 @@ Page Text:
     
     # 1. Fast Gemini extraction: gemini-3.8-flash
     if getattr(config, "GEMINI_API_KEY", None):
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={config.GEMINI_API_KEY}"
+        gemini_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+        gemini_headers = {
+            "x-goog-api-key": config.GEMINI_API_KEY,
+            "Content-Type": "application/json"
+        }
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"responseMimeType": "application/json"}
         }
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(gemini_url, json=payload)
+                resp = await client.post(gemini_url, headers=gemini_headers, json=payload)
                 if resp.status_code == 200:
                     data = resp.json()
                     content = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -126,14 +130,14 @@ Page Text:
         except Exception as e:
             logger.warning(f"Gemini exception for {company_name}: {e}, switching immediately to Groq...")
 
-    # 2. Fast Groq fallback chain: openai/gpt-oss-120b -> qwen/qwen3.8-27b -> openai/gpt-oss-20b -> llama-3.1-8b-instant
+    # 2. Fast Groq fallback chain: llama-3.3-70b-versatile -> openai/gpt-oss-120b -> openai/gpt-oss-20b -> llama-3.1-8b-instant
     if config.GROQ_API_KEY:
         groq_url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {config.GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
-        for model_id in ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]:
+        for model_id in ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]:
             payload = {
                 "model": model_id,
                 "messages": [

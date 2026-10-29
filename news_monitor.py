@@ -564,8 +564,12 @@ Return JSON ONLY:
 }}"""
 
     if config.GEMINI_API_KEY:
+        gemini_headers = {
+            "x-goog-api-key": config.GEMINI_API_KEY,
+            "Content-Type": "application/json"
+        }
         for g_model in ["gemini-3.8-flash", "gemini-3.1-flash-lite"]:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent"
             payload: dict[str, Any] = {
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {
@@ -575,13 +579,14 @@ Return JSON ONLY:
             }
             try:
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(url, json=payload)
+                    resp = await client.post(url, headers=gemini_headers, json=payload)
                     if resp.status_code == 200:
                         res_json = resp.json()
                         text = res_json["candidates"][0]["content"]["parts"][0]["text"]
                         data = extract_json_payload(text)
                         if data.get("is_faithful") is False:
-                            logger.warning(f"Autograder note ({g_model}): {data.get('reason')}")
+                            logger.warning(f"Autograder rejected digest ({g_model}): {data.get('reason')}")
+                            return False
                         return True
             except Exception as e:
                 logger.warning(f"Autograder check error ({g_model}): {e}")
@@ -591,7 +596,7 @@ Return JSON ONLY:
         try:
             url = "https://api.groq.com/openai/v1/chat/completions"
             headers = {"Authorization": f"Bearer {config.GROQ_API_KEY}", "Content-Type": "application/json"}
-            for q_model in ["qwen/qwen3.8-27b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]:
+            for q_model in ["llama-3.3-70b-versatile", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]:
                 payload = {
                     "model": q_model,
                     "messages": [
@@ -608,7 +613,8 @@ Return JSON ONLY:
                         text = resp.json()["choices"][0]["message"]["content"]
                         data = extract_json_payload(text)
                         if data.get("is_faithful") is False:
-                            logger.warning(f"Autograder (Groq) note: {data.get('reason')}")
+                            logger.warning(f"Autograder (Groq) rejected digest: {data.get('reason')}")
+                            return False
                         return True
         except Exception as e:
             logger.warning(f"Autograder check error (Groq fallback): {e}")
@@ -633,7 +639,7 @@ def build_quality_fallback_digest(batch: list[dict]) -> str:
     import html as _html
     main_art = batch[0]
     title = _html.escape(main_art.get("title", "Главные новости IT").strip())
-    link = main_art.get("link", "").strip()
+    link = _html.escape(main_art.get("link", "").strip())
     desc = _html.escape(main_art.get("description", "").strip())
     if len(desc) > 300:
         desc = desc[:297] + "..."
@@ -789,8 +795,12 @@ Return ONLY valid JSON:
             "gemini-3.8-flash",
             "gemini-3.1-flash-lite"
         ]
+        gemini_headers = {
+            "x-goog-api-key": config.GEMINI_API_KEY,
+            "Content-Type": "application/json"
+        }
         for g_model in gemini_models:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent"
             payload: dict[str, Any] = {
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {
@@ -806,7 +816,7 @@ Return ONLY valid JSON:
                         reraise=True
                     ):
                         with attempt:
-                            resp = await client.post(url, json=payload)
+                            resp = await client.post(url, headers=gemini_headers, json=payload)
                             
                             if resp.status_code in [429, 500, 502, 503, 504]:
                                 logger.warning(f"Gemini API transient error {resp.status_code} on {g_model}, retrying...")
@@ -823,7 +833,8 @@ Return ONLY valid JSON:
                             if not validate_format(digest_ru):
                                 raise Exception(f"Format validation failed for {g_model}")
 
-                            await autograde_digest(digest_ru, articles_snippet)
+                            if not await autograde_digest(digest_ru, articles_snippet):
+                                raise Exception(f"Autograder rejected hallucinated digest for {g_model}")
                                 
                             logger.info(f"Successfully generated and validated digest via Gemini API model ({g_model})")
                             parsed["selected_tip_term"] = selected_category
@@ -833,7 +844,7 @@ Return ONLY valid JSON:
 
     # 2. Fallback to Groq API if Gemini is unavailable or fails
     if config.GROQ_API_KEY:
-        models_to_try = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
+        models_to_try = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {config.GROQ_API_KEY}",
@@ -876,7 +887,8 @@ Return ONLY valid JSON:
                             if not validate_format(digest_ru):
                                 raise Exception(f"Format validation failed for {model}")
 
-                            await autograde_digest(digest_ru, articles_snippet)
+                            if not await autograde_digest(digest_ru, articles_snippet):
+                                raise Exception(f"Autograder rejected hallucinated digest for {model}")
                                 
                             logger.info(f"Successfully generated and validated digest via Groq fallback ({model})")
                             parsed["selected_tip_term"] = selected_category
@@ -886,7 +898,7 @@ Return ONLY valid JSON:
 
     return {"restructuring_companies": [], "digest_ru": "", "selected_tip_term": selected_category}
 
-async def process_news(state: dict, force_post: bool = False) -> dict:
+async def process_news(state: dict, force_post: bool = False, dynamic_companies: list[dict] | None = None) -> dict:
     """Fetch news, analyze with LLM, and return restructuring companies, digest, and used term if new articles found."""
     raw_seen = state.get("seen_news", [])
     posted_news = state.get("posted_news", [])
@@ -916,7 +928,8 @@ async def process_news(state: dict, force_post: bool = False) -> dict:
         target_companies = json_lib.load(f)
     
     target_company_names = [c["name"] for c in target_companies]
-    target_company_names.extend([c["name"] for c in state.get("dynamic_companies", [])])
+    extra_dynamic = dynamic_companies if dynamic_companies is not None else state.get("dynamic_companies", [])
+    target_company_names.extend([c["name"] for c in extra_dynamic if isinstance(c, dict) and c.get("name")])
     target_company_names = list(set(target_company_names)) # dedup
 
     all_articles: list[dict[str, Any]] = []

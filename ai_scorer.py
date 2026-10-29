@@ -87,8 +87,12 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
     # 1. Try Google Gemini models
     if config.GEMINI_API_KEY:
         gemini_models = ["gemini-3.8-flash", "gemini-3.1-flash-lite"]
+        gemini_headers = {
+            "x-goog-api-key": config.GEMINI_API_KEY,
+            "Content-Type": "application/json"
+        }
         for g_model in gemini_models:
-            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent?key={config.GEMINI_API_KEY}"
+            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{g_model}:generateContent"
             gemini_payload = {
                 "contents": [{
                     "parts": [{"text": prompt}]
@@ -99,7 +103,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
             }
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.post(gemini_url, json=gemini_payload)
+                    resp = await client.post(gemini_url, headers=gemini_headers, json=gemini_payload)
                     if resp.status_code == 200:
                         data = resp.json()
                         content = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -123,7 +127,7 @@ async def get_match_score(title: str, company: str, text: str) -> dict:
             "Authorization": f"Bearer {config.GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
-        groq_models = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
+        groq_models = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"]
         for model_id in groq_models:
             payload = {
                 "model": model_id,

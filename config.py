@@ -1,13 +1,66 @@
 import os
+import re as _re
 import sys
 import logging
+
+
+def redact_secrets(text: str) -> str:
+    """Mask API keys, bot tokens, and proxy credentials from any log or error string."""
+    if not text:
+        return text
+    out = str(text)
+    # Mask dynamic secret values loaded in config or environment
+    secret_values = [
+        globals().get("TELEGRAM_BOT_TOKEN"),
+        globals().get("GEMINI_API_KEY"),
+        globals().get("GROQ_API_KEY"),
+        globals().get("SUPABASE_KEY"),
+        globals().get("PROXY_URL"),
+        os.getenv("TELEGRAM_BOT_TOKEN"),
+        os.getenv("GEMINI_API_KEY"),
+        os.getenv("GROQ_API_KEY"),
+        os.getenv("SUPABASE_KEY"),
+        os.getenv("PROXY_URL"),
+        os.getenv("CVR_API_KEY"),
+        os.getenv("CVR_TOKEN"),
+    ]
+    for secret in secret_values:
+        if secret and isinstance(secret, str) and len(secret) >= 4:
+            out = out.replace(secret, "***REDACTED***")
+    # Mask URL patterns: Telegram bot token, query key=..., Bearer tokens
+    out = _re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***REDACTED***", out)
+    out = _re.sub(r"([?&]key=)[^&\s\"']+", r"\1***REDACTED***", out, flags=_re.IGNORECASE)
+    out = _re.sub(r"(Bearer\s+)[A-Za-z0-9_\-\.]+", r"\1***REDACTED***", out, flags=_re.IGNORECASE)
+    return out
+
+
+class SecretRedactingFilter(logging.Filter):
+    """Logging filter that automatically scrubs secrets from log messages and args."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+            redacted = redact_secrets(msg)
+            record.msg = redacted
+            record.args = ()
+        except Exception:
+            pass
+        return True
+
 
 # Logging Setup
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
+# Silence noisy HTTPX request logs that print full URLs (including Telegram bot URLs)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+_secret_filter = SecretRedactingFilter()
 logger = logging.getLogger("elevplads_scraper")
+logger.addFilter(_secret_filter)
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_secret_filter)
 
 # Telegram Configuration
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

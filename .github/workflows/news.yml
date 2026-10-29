@@ -11,7 +11,7 @@ on:
         type: boolean
         default: false
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   scrape-news:

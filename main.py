@@ -449,7 +449,7 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
         title = escape_html(job['title'])
         company = escape_html(job['company'])
         source = escape_html(job['source'])
-        url = job['url']
+        url = escape_html(job['url'])
 
         # Check validation (pre-computed prior to notifications)
         is_approved = job.get("is_approved", False)
@@ -525,13 +525,14 @@ async def notify_telegram(jobs: list[dict], changed_companies: list[dict], cycle
         current_msg = "⚠️ <b>Mulige nye elevpladser opdaget på karrieresider</b>\n\n"
         for comp in changed_companies:
             company = escape_html(comp.get('company', 'Ukendt'))
-            url = comp.get('url', '')
+            raw_comp_url = comp.get('url', '')
+            url = escape_html(raw_comp_url)
             new_links = comp.get("new_links", [])
             comp_str = f"🏢 <b>{company}</b>\n"
             if new_links:
                 for lk in new_links:
                     lk_title = escape_html(lk.get("text") or "Ny stilling")
-                    lk_url = lk.get("url") or url
+                    lk_url = escape_html(lk.get("url") or raw_comp_url)
                     comp_str += f"• <a href=\"{lk_url}\">{lk_title}</a>\n"
                 comp_str += "\n"
             else:
@@ -695,6 +696,8 @@ async def main():
                         jobs_state["last_proff_scrape"] = (now_dt - timedelta(days=6)).isoformat()
                         await save_state(jobs_state, state_key="jobs_state")
                 
+                import copy
+                original_dynamic = copy.deepcopy(jobs_state.get("dynamic_companies", []))
                 dynamic_companies = [
                     c for c in jobs_state.get("dynamic_companies", [])
                     if c.get("url") and c["url"].strip().startswith("http") and c.get("fail_count", 0) < 3
@@ -718,9 +721,9 @@ async def main():
             finally:
                 await browser.close()
 
-        # Prune dynamic companies that failed 5 times in a row and limit to 50 (BUG-5)
-        pruned_dynamic = [c for c in dynamic_companies if c.get("fail_count", 0) < 5][:50]
-        if pruned_dynamic != jobs_state.get("dynamic_companies", []):
+        # Prune dynamic companies that failed 3 times in a row and limit to 50 (BUG-5)
+        pruned_dynamic = [c for c in dynamic_companies if c.get("fail_count", 0) < 3][:50]
+        if pruned_dynamic != original_dynamic:
             jobs_state["dynamic_companies"] = pruned_dynamic
             jobs_state_updated = True
 
@@ -954,9 +957,22 @@ async def main():
     if mode in ['news', 'all']:
         news_state = await load_state(state_key="news_state")
         news_state_updated = False
+        dynamic_comps_for_news = news_state.get("dynamic_companies")
+        if not dynamic_comps_for_news:
+            try:
+                jobs_state_ref = jobs_state if mode == 'all' else await load_state(state_key="jobs_state")
+                if isinstance(jobs_state_ref, dict):
+                    dynamic_comps_for_news = jobs_state_ref.get("dynamic_companies", [])
+            except Exception as e:
+                logger.warning(f"Could not load dynamic_companies from jobs_state for news monitor: {e}")
+                dynamic_comps_for_news = []
         import news_monitor
         force_post_env = os.getenv("FORCE_POST", "false").lower() == "true"
-        news_result = await news_monitor.process_news(news_state, force_post=force_post_env)
+        news_result = await news_monitor.process_news(
+            news_state,
+            force_post=force_post_env,
+            dynamic_companies=dynamic_comps_for_news
+        )
         digests_ru = news_result.get("digests_ru", [])
         restructuring_companies = news_result.get("restructuring_companies", [])
         if "seen_news" in news_result:

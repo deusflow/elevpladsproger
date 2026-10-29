@@ -99,6 +99,57 @@ class TestAuditFixes(unittest.TestCase):
         # Jobindex / IT-Jobbank must iterate the region slugs, not hard-code one
         self.assertIn("TARGET_REGION_SLUGS", content)
 
+    def test_secret_redaction_filter(self):
+        """Secrets and bot tokens must never leak into logs."""
+        with patch.object(config, "GEMINI_API_KEY", "AIzaSySuperSecretKey12345"), \
+             patch.object(config, "TELEGRAM_BOT_TOKEN", "123456789:AAH_super_secret_bot_token"):
+            raw = "Error calling https://api.telegram.org/bot123456789:AAH_super_secret_bot_token/sendMessage and key=AIzaSySuperSecretKey12345"
+            redacted = config.redact_secrets(raw)
+            self.assertNotIn("AAH_super_secret_bot_token", redacted)
+            self.assertNotIn("AIzaSySuperSecretKey12345", redacted)
+            self.assertIn("***REDACTED***", redacted)
+
+    def test_radar_html_injection_escaped(self):
+        """Radar Telegram formatter must escape &, <, > in company names and fields."""
+        import laerepladsen_radar
+        alert = {
+            "type": "new_accreditation",
+            "name": "B&O <Script> & Partners A/S",
+            "cvr": "12345678",
+            "postal_code": "7600",
+            "city": "Struer & Omegn",
+            "specialty": "Datatekniker <Programmering>",
+            "active_students": 0,
+            "next_expiry": None,
+            "tip": "Send CV til B&O <nu>"
+        }
+        msg = laerepladsen_radar.format_radar_telegram_message(alert)
+        self.assertIn("B&amp;O &lt;Script&gt; &amp; Partners A/S", msg)
+        self.assertIn("Struer &amp; Omegn", msg)
+        self.assertIn("Datatekniker &lt;Programmering&gt;", msg)
+        self.assertIn("Send CV til B&amp;O &lt;nu&gt;", msg)
+
+    def test_autograder_blocks_unfaithful_digest(self):
+        """autograde_digest must return False when LLM reports is_faithful=false."""
+        import asyncio
+        import news_monitor
+
+        class MockUnfaithfulResp:
+            status_code = 200
+            def json(self):
+                return {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{"text": '{"is_faithful": false, "reason": "Hallucinated fake event"}'}]
+                        }
+                    }]
+                }
+
+        with patch.object(config, "GEMINI_API_KEY", "fake_gemini_key"), \
+             patch("httpx.AsyncClient.post", new=AsyncMock(return_value=MockUnfaithfulResp())):
+            res = asyncio.run(news_monitor.autograde_digest("Фейковая новость", "Original source text"))
+            self.assertFalse(res, "autograde_digest must return False on hallucinated digest!")
+
 
 if __name__ == "__main__":
     unittest.main()
