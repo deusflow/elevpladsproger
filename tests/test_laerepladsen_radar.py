@@ -11,6 +11,7 @@ import laerepladsen_radar
 class TestLaerepladsenRadar(unittest.TestCase):
     def test_detect_new_accreditation(self):
         """Newly accredited companies with Datatekniker approvals must trigger a new_accreditation alert."""
+        recent_date = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%d")
         accredited_places = [{
             "name": "New Tech ApS",
             "cvr": "12345678",
@@ -21,7 +22,7 @@ class TestLaerepladsenRadar(unittest.TestCase):
                 "id": "app-1",
                 "specialty": "Datatekniker med speciale i programmering",
                 "active_students": 0,
-                "approved_date": "2026-09-01",
+                "approved_date": recent_date,
                 "next_expiry": None
             }]
         }]

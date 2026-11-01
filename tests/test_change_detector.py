@@ -63,6 +63,10 @@ class TestChangeDetector(unittest.TestCase):
                  patch("scrapers.scrape_thehub", new=AsyncMock(return_value=[])), \
                  patch("scrapers.scrape_elevplads", new=AsyncMock(return_value=[])), \
                  patch("scrapers.scrape_linkedin", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_jobnet", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_jobindex", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_itjobbank", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_techjob", new=AsyncMock(return_value=[])), \
                  patch("main.async_playwright") as mock_pw, \
                  patch("ai_scorer.enrich_jobs_with_ai", new=AsyncMock()), \
                  patch("company_validator.check_accreditation", new=AsyncMock(return_value=True)), \
@@ -127,6 +131,10 @@ class TestChangeDetector(unittest.TestCase):
                  patch("scrapers.scrape_thehub", new=AsyncMock(return_value=[])), \
                  patch("scrapers.scrape_elevplads", new=AsyncMock(return_value=[])), \
                  patch("scrapers.scrape_linkedin", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_jobnet", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_jobindex", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_itjobbank", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_techjob", new=AsyncMock(return_value=[])), \
                  patch("main.async_playwright") as mock_pw, \
                  patch("ai_scorer.enrich_jobs_with_ai", new=AsyncMock()), \
                  patch("company_validator.check_accreditation", new=AsyncMock(return_value=True)), \
@@ -188,6 +196,10 @@ class TestChangeDetector(unittest.TestCase):
                  patch("scrapers.scrape_thehub", new=AsyncMock(return_value=[])), \
                  patch("scrapers.scrape_elevplads", new=AsyncMock(return_value=[])), \
                  patch("scrapers.scrape_linkedin", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_jobnet", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_jobindex", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_itjobbank", new=AsyncMock(return_value=[])), \
+                 patch("scrapers.scrape_techjob", new=AsyncMock(return_value=[])), \
                  patch("main.async_playwright") as mock_pw, \
                  patch("ai_scorer.enrich_jobs_with_ai", new=AsyncMock()), \
                  patch("company_validator.check_accreditation", new=AsyncMock(return_value=True)), \
